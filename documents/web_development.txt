@@ -1,0 +1,28 @@
+Web development is the work involved in developing a website for the Internet or
+an intranet. Web development can range from developing a simple single static page
+of plain text to complex web applications, electronic businesses, and social network
+services.
+
+Backend development refers to the server-side of web development. It focuses on
+databases, scripting, and the architecture of websites. Backend developers write code
+that communicates between the server and the browser, using languages like Python,
+Java, Ruby, PHP, and Node.js.
+
+Frontend development refers to the client-side of web development. It focuses on
+the visual elements that users interact with in the browser. Frontend developers
+use HTML, CSS, and JavaScript to create responsive and interactive user interfaces.
+
+Popular web frameworks include:
+- Python: Django, Flask, FastAPI
+- JavaScript: React, Vue, Angular, Express
+- Java: Spring Boot
+- Ruby: Ruby on Rails
+- PHP: Laravel
+
+RESTful APIs have become the standard way for frontend and backend systems to
+communicate. REST uses HTTP methods (GET, POST, PUT, DELETE) to perform operations
+on resources identified by URLs.
+
+Modern web development also involves DevOps practices, containerization with Docker,
+cloud deployment on platforms like AWS, Google Cloud, and Azure, and continuous
+integration and deployment (CI/CD) pipelines.

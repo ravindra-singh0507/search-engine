@@ -1,0 +1,29 @@
+Databases are organized collections of data stored and accessed electronically.
+They are managed by database management systems (DBMS). There are two main categories
+of databases: relational and non-relational.
+
+Relational databases store data in tables with rows and columns. They use Structured
+Query Language (SQL) for querying and managing data. Popular relational databases
+include PostgreSQL, MySQL, SQLite, Oracle, and Microsoft SQL Server.
+
+SQL is the standard language for relational database management. Key SQL operations
+include:
+- SELECT: Query data from tables
+- INSERT: Add new records
+- UPDATE: Modify existing records
+- DELETE: Remove records
+- JOIN: Combine data from multiple tables
+
+Non-relational databases (NoSQL) handle different types of data:
+- Document stores: MongoDB, CouchDB (store JSON-like documents)
+- Key-value stores: Redis, DynamoDB (simple key-value pairs)
+- Column-family stores: Cassandra, HBase (wide-column data)
+- Graph databases: Neo4j, ArangoDB (relationship-focused data)
+
+Database indexing is crucial for performance. An index is a data structure that
+improves the speed of data retrieval operations. B-tree indexes are the most
+common type, providing O(log n) lookup time.
+
+ACID properties (Atomicity, Consistency, Isolation, Durability) ensure reliable
+transaction processing in databases. Modern distributed databases often trade
+consistency for availability, following the CAP theorem.

@@ -1,0 +1,19 @@
+Python is a high-level, general-purpose programming language. Its design philosophy
+emphasizes code readability with the use of significant indentation. Python is
+dynamically typed and garbage-collected. It supports multiple programming paradigms,
+including structured, object-oriented and functional programming.
+
+Python was conceived in the late 1980s by Guido van Rossum at Centrum Wiskunde
+and Informatica (CWI) in the Netherlands. Its implementation began in December 1989.
+
+Python consistently ranks as one of the most popular programming languages. It is used
+for web development, data science, machine learning, artificial intelligence, automation,
+scripting, and scientific computing.
+
+Key features of Python include:
+- Simple and easy to learn syntax
+- Interpreted language with dynamic typing
+- Extensive standard library
+- Cross-platform compatibility
+- Strong community and ecosystem
+- Support for multiple programming paradigms

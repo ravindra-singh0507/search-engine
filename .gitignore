@@ -1,0 +1,39 @@
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Pytest cache
+.pytest_cache/
+
+# Runtime DB / data
+data/*.db
+data/*.sqlite
+*.sqlite
+*.db
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# OS files
+Thumbs.db

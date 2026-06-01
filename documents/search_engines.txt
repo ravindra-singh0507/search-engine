@@ -1,0 +1,23 @@
+Search engines are software systems designed to carry out web searches. They search
+the World Wide Web in a systematic way for particular information specified in a
+textual web search query. The search results are generally presented in a line of
+results, often referred to as search engine results pages (SERPs).
+
+The core components of a search engine are:
+
+1. Web Crawler: Automatically browses the web and downloads web pages.
+2. Indexer: Analyzes web pages and creates an index for fast retrieval.
+3. Search Algorithm: Determines the relevance and ranking of search results.
+4. Query Processor: Interprets user queries and retrieves matching documents.
+
+The most important data structure in a search engine is the inverted index. An
+inverted index maps each unique word to the list of documents containing that word.
+This allows the search engine to quickly find all documents relevant to a query
+without scanning every document.
+
+Ranking algorithms like TF-IDF (Term Frequency-Inverse Document Frequency) help
+determine which documents are most relevant to a query. TF-IDF considers both how
+often a term appears in a document and how rare the term is across all documents.
+
+Modern search engines like Google use hundreds of ranking signals beyond TF-IDF,
+including PageRank, user behavior, content freshness, and machine learning models.

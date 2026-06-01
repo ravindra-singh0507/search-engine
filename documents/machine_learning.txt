@@ -1,0 +1,29 @@
+Machine learning is a subset of artificial intelligence that focuses on building
+systems that learn from data. Instead of being explicitly programmed to perform a
+task, machine learning algorithms use statistical methods to improve their performance
+on a task through experience.
+
+There are three main types of machine learning:
+
+1. Supervised Learning: The algorithm learns from labeled training data. Examples
+   include classification (spam detection, image recognition) and regression
+   (price prediction, weather forecasting).
+
+2. Unsupervised Learning: The algorithm finds patterns in unlabeled data. Examples
+   include clustering (customer segmentation) and dimensionality reduction (PCA).
+
+3. Reinforcement Learning: The algorithm learns by interacting with an environment
+   and receiving rewards or penalties. Examples include game playing and robotics.
+
+Popular machine learning libraries in Python include:
+- scikit-learn for classical ML algorithms
+- TensorFlow and PyTorch for deep learning
+- pandas for data manipulation
+- NumPy for numerical computing
+
+Deep learning, a subset of machine learning, uses neural networks with many layers
+to learn complex patterns. It has achieved breakthroughs in computer vision, natural
+language processing, and speech recognition.
+
+The machine learning pipeline typically involves: data collection, data cleaning,
+feature engineering, model selection, training, evaluation, and deployment.
