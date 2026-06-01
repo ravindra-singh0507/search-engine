@@ -1,6 +1,6 @@
 # Search Engine — Built from Scratch
 
-A fully functional search engine built from scratch in Python. No Elasticsearch, no Solr, no Whoosh — every component is implemented manually to teach search engine internals.
+A fully functional search engine built from scratch in Python. No Elasticsearch, no Solr, no Whoosh
 
 ## What This Project Covers
 
@@ -179,14 +179,6 @@ curl http://localhost:8000/crawl/stats
 ```bash
 pytest tests/ -v
 ```
-
-## Example Crawl Targets
-
-Good seed URLs for testing the crawler:
-
-- `https://docs.python.org/3/tutorial/index.html` — Python tutorial (structured, many internal links)
-- `https://en.wikipedia.org/wiki/Search_engine` — Wikipedia article (dense text, many links)
-- `https://httpbin.org` — HTTP testing service (simple structure)
 
 ## Key Concepts Implemented
 
