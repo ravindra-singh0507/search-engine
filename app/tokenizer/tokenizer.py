@@ -60,8 +60,13 @@ DEFAULT_STOP_WORDS = frozenset({
     "who", "how", "i", "you", "just", "also", "very", "too",
 })
 
-PUNCTUATION_PATTERN = re.compile(r"[^\w\s]", re.UNICODE)
+# Strip everything that is not a letter, digit, or whitespace.
+# Using [^\w\s] kept underscores (part of \w); we explicitly exclude them
+# so __init__, some_var etc. are split into meaningful tokens.
+PUNCTUATION_PATTERN = re.compile(r"[^\w\s]|_", re.UNICODE)
 WHITESPACE_PATTERN = re.compile(r"\s+")
+# Pure-digit tokens (e.g. "123") add noise; keep only tokens with ≥1 letter.
+HAS_LETTER_PATTERN = re.compile(r"[a-zA-Z]")
 
 
 @dataclass
@@ -134,6 +139,12 @@ class Tokenizer:
                 continue
 
             if not any(c.isalnum() for c in raw):
+                position += 1
+                continue
+
+            # Skip pure-numeric tokens (e.g. "123", "2024") — they're noise
+            # in general-purpose document search.
+            if not HAS_LETTER_PATTERN.search(raw):
                 position += 1
                 continue
 

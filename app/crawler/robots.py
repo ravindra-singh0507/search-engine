@@ -111,7 +111,11 @@ class RobotsParser:
     def _parse_content(self, content: str) -> RobotsData:
         """
         Parse robots.txt content.
-        We only care about rules matching our user-agent or *.
+
+        We collect rules from sections whose User-agent is '*' OR exactly
+        matches our user-agent string.  A new User-agent line always resets
+        the 'applies_to_us' flag so rules from one section never bleed into
+        the next (BUG-006 fix).
         """
         data = RobotsData()
         applies_to_us = False
@@ -125,13 +129,14 @@ class RobotsParser:
                 continue
 
             key, _, value = line.partition(":")
-            key = key.strip().lower()
+            key   = key.strip().lower()
             value = value.strip()
 
             if key == "user-agent":
+                # Reset on every User-agent directive — fixes section bleed
                 applies_to_us = (
-                    value == "*" or
-                    value.lower() == self.user_agent.lower()
+                    value == "*"
+                    or value.lower() == self.user_agent.lower()
                 )
             elif applies_to_us:
                 if key == "disallow" and value:

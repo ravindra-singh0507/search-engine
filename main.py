@@ -33,9 +33,11 @@ config = EngineConfig(
 app = create_app(config)
 
 if __name__ == "__main__":
+    import os
+    dev_mode = os.environ.get("ENV", "development").lower() == "development"
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=dev_mode,   # True in dev, False in production (ENV=production)
     )
