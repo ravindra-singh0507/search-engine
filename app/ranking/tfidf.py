@@ -173,6 +173,7 @@ class TFIDFRanker:
         """
         Build a TF-IDF vector for a document.
         Returns: {term: tfidf_score, ...}
+        Uses Database.get_term_by_id() instead of accessing db.conn directly.
         """
         postings = self.db.get_postings_for_doc(doc_id)
         doc = self.db.get_document(doc_id)
@@ -183,19 +184,13 @@ class TFIDFRanker:
         vector: dict[str, float] = {}
 
         for posting in postings:
-            term_record = self.db.conn.execute(
-                "SELECT term, document_frequency FROM terms WHERE term_id = ?",
-                (posting.term_id,)
-            ).fetchone()
+            term_record = self.db.get_term_by_id(posting.term_id)
             if term_record is None:
                 continue
 
-            term = term_record["term"]
-            df = term_record["document_frequency"]
-
-            tf = self.compute_tf(posting.term_frequency, total_terms)
-            idf = self.compute_idf(df, total_documents)
-            vector[term] = self.compute_tfidf(tf, idf)
+            tf  = self.compute_tf(posting.term_frequency, total_terms)
+            idf = self.compute_idf(term_record.document_frequency, total_documents)
+            vector[term_record.term] = self.compute_tfidf(tf, idf)
 
         return vector
 

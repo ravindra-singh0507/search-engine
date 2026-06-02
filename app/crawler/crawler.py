@@ -159,11 +159,13 @@ class WebCrawler:
         frontier: deque[tuple[str, int]] = deque()  # (url, depth)
         visited: set[str] = set()
 
-        # Seed the frontier
+        # Seed the frontier — pre-populate visited from DB so a restarted
+        # crawl doesn't re-enqueue URLs that are already stored.
         for url in seed_urls:
             normalized = normalize_url(url)
             if normalized and normalized not in visited:
-                frontier.append((normalized, 0))
+                if not self.db.url_already_crawled(normalized):
+                    frontier.append((normalized, 0))
                 visited.add(normalized)
 
         logger.info(
@@ -281,11 +283,15 @@ class WebCrawler:
         return " ".join(chunk for chunk in lines if chunk)
 
     def _extract_links(self, soup: BeautifulSoup, base_url: str) -> list[str]:
-        """Extract all href links from anchor tags."""
+        """Extract all href links from anchor tags, filtering unsafe schemes."""
+        _SAFE_SCHEMES = ("http://", "https://", "/", "./", "../")
         links: list[str] = []
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"]
-            if href.startswith(("javascript:", "mailto:", "tel:", "#")):
+            # Skip non-navigable and unsafe URI schemes
+            if href.startswith((
+                "javascript:", "mailto:", "tel:", "#", "data:", "vbscript:",
+            )):
                 continue
             full_url = normalize_url(href, base_url=base_url)
             if full_url:

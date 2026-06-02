@@ -1,0 +1,32 @@
+[
+  {
+    "query_id": "q1",
+    "query": "python programming language",
+    "relevant_doc_ids": [1],
+    "relevance_scores": {"1": 3}
+  },
+  {
+    "query_id": "q2",
+    "query": "web development frameworks",
+    "relevant_doc_ids": [1, 3],
+    "relevance_scores": {"1": 2, "3": 3}
+  },
+  {
+    "query_id": "q3",
+    "query": "machine learning algorithms",
+    "relevant_doc_ids": [4],
+    "relevance_scores": {"4": 3}
+  },
+  {
+    "query_id": "q4",
+    "query": "database storage systems",
+    "relevant_doc_ids": [5],
+    "relevance_scores": {"5": 3}
+  },
+  {
+    "query_id": "q5",
+    "query": "search engine information retrieval",
+    "relevant_doc_ids": [2],
+    "relevance_scores": {"2": 3}
+  }
+]
