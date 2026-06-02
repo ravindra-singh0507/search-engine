@@ -2,6 +2,7 @@
 venv/
 env/
 .venv/
+__pypackages__/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -13,6 +14,10 @@ __pycache__/
 *.egg
 dist/
 build/
+pip-wheel-metadata/
+
+# Installer / wheel
+pip-log.txt
 
 # Editor directories and files
 .vscode/
@@ -20,8 +25,17 @@ build/
 *.swp
 .DS_Store
 
-# Pytest cache
+# Pytest / test caches
 .pytest_cache/
+
+# Type checker / caches
+.mypy_cache/
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+coverage.xml
 
 # Runtime DB / data
 data/*.db
@@ -29,11 +43,24 @@ data/*.sqlite
 *.sqlite
 *.db
 
-# Environment
+# Environment / secrets
 .env
+.env.*
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
 
 # Logs
 *.log
+logs/
+*.log.*
 
 # OS files
 Thumbs.db
+desktop.ini
+
+# Misc caches
+.cache/
+
