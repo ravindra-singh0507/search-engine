@@ -163,16 +163,40 @@ class BooleanRetriever:
 
     def _execute_boolean(self, tokens: list[QueryToken]) -> set[int]:
         """
-        Execute a Boolean query left-to-right.
+        Execute a Boolean query with correct operator precedence:
+          AND / NOT bind tighter than OR  (standard Boolean algebra).
 
-        Algorithm:
-        1. Start with the first term's posting list
-        2. Walk through tokens:
-           - If we see AND, intersect with the next term
-           - If we see OR, union with the next term
-           - If we see NOT, subtract the next term
-        3. If two terms appear with no operator between them, default to AND
+        Strategy: split the token list on OR boundaries, evaluate each
+        AND/NOT group independently, then union all group results.
+
+        Example: "python OR java AND backend"
+          Group 1: [python]               → {1, 3}
+          Group 2: [java, AND, backend]   → {2}
+          Result:  {1, 2, 3}
         """
+        # ── Split into OR-separated groups ────────────────────────────────
+        or_groups: list[list[QueryToken]] = []
+        current_group: list[QueryToken]   = []
+
+        for token in tokens:
+            if token.is_operator and token.operator == Operator.OR:
+                if current_group:
+                    or_groups.append(current_group)
+                current_group = []
+            else:
+                current_group.append(token)
+
+        if current_group:
+            or_groups.append(current_group)
+
+        # ── Evaluate each AND/NOT group, then union ────────────────────────
+        final: set[int] = set()
+        for group in or_groups:
+            final |= self._evaluate_and_group(group)
+        return final
+
+    def _evaluate_and_group(self, tokens: list[QueryToken]) -> set[int]:
+        """Evaluate a sequence of AND / NOT / implicit-AND operations."""
         result: set[int] | None = None
         pending_op: Operator | None = None
 
@@ -189,21 +213,20 @@ class BooleanRetriever:
             if result is None:
                 if pending_op == Operator.NOT:
                     all_docs = self._get_all_doc_ids()
-                    result = all_docs - term_docs
+                    result   = all_docs - term_docs
                 else:
                     result = term_docs
                 pending_op = None
                 continue
 
-            op = pending_op or Operator.AND
+            op         = pending_op or Operator.AND
             pending_op = None
 
             if op == Operator.AND:
                 result &= term_docs
-            elif op == Operator.OR:
-                result |= term_docs
             elif op == Operator.NOT:
                 result -= term_docs
+            # OR at this level is impossible (already split on OR above)
 
         return result or set()
 

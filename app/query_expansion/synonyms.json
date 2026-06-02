@@ -1,0 +1,22 @@
+{
+  "car":        ["automobile", "vehicle", "auto"],
+  "doctor":     ["physician", "medic", "surgeon", "clinician"],
+  "fast":       ["quick", "rapid", "speedy"],
+  "big":        ["large", "huge", "enormous", "gigantic"],
+  "small":      ["tiny", "little", "compact", "mini"],
+  "search":     ["find", "lookup", "query", "retrieve"],
+  "program":    ["software", "application", "app", "code"],
+  "code":       ["program", "script", "software"],
+  "database":   ["db", "datastore", "storage", "repository"],
+  "web":        ["internet", "online", "network"],
+  "image":      ["photo", "picture", "img"],
+  "video":      ["clip", "film", "movie"],
+  "article":    ["post", "document", "page", "content"],
+  "machine":    ["computer", "system", "device"],
+  "learning":   ["training", "education", "study"],
+  "algorithm":  ["method", "procedure", "technique"],
+  "error":      ["bug", "fault", "issue", "exception"],
+  "fix":        ["repair", "solve", "patch", "resolve"],
+  "deploy":     ["release", "ship", "publish", "launch"],
+  "test":       ["verify", "check", "validate", "assert"]
+}
