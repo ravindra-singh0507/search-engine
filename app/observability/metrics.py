@@ -150,11 +150,6 @@ class MetricsCollector:
         self.embedding_operations = Counter("embedding_operations_total")
         self.embedding_cache_hits = Counter("embedding_cache_hits_total")
 
-        # Phase 5 counters
-        self.pipeline_searches    = Counter("pipeline_searches_total")
-        self.reranking_operations = Counter("reranking_operations_total")
-        self.query_classifications = Counter("query_classifications_total")
-
         latency_buckets = (5, 10, 25, 50, 100, 200, 500, 1000, 2000)
         self.search_latency   = Histogram("search_latency_ms",   latency_buckets)
         self.index_latency    = Histogram("index_latency_ms",    latency_buckets)
@@ -167,13 +162,6 @@ class MetricsCollector:
         self.semantic_search_latency  = Histogram("semantic_search_latency_ms",  latency_buckets)
         self.hybrid_search_latency    = Histogram("hybrid_search_latency_ms",    latency_buckets)
         self.vector_index_latency     = Histogram("vector_index_latency_ms",     embed_buckets)
-
-        # Phase 5 histograms
-        rerank_buckets = (50, 100, 250, 500, 1000, 2500, 5000)
-        self.reranking_latency        = Histogram("reranking_latency_ms",        rerank_buckets)
-        self.pipeline_latency         = Histogram("pipeline_latency_ms",         rerank_buckets)
-        self.fusion_latency           = Histogram("fusion_latency_ms",           (1, 2, 5, 10, 25))
-        self.query_understanding_latency = Histogram("query_understanding_latency_ms", (1, 2, 5, 10))
 
         self._start_time = time.time()
 
@@ -222,22 +210,6 @@ class MetricsCollector:
     def record_vector_index(self, latency_ms: float) -> None:
         self.vector_index_latency.observe(latency_ms)
 
-    # Phase 5 record helpers
-    def record_pipeline_search(self, latency_ms: float) -> None:
-        self.pipeline_searches.inc()
-        self.pipeline_latency.observe(latency_ms)
-
-    def record_reranking(self, latency_ms: float) -> None:
-        self.reranking_operations.inc()
-        self.reranking_latency.observe(latency_ms)
-
-    def record_query_classification(self, latency_ms: float) -> None:
-        self.query_classifications.inc()
-        self.query_understanding_latency.observe(latency_ms)
-
-    def record_fusion(self, latency_ms: float) -> None:
-        self.fusion_latency.observe(latency_ms)
-
     # ── Reporting ─────────────────────────────────────────────────────────
 
     def to_prometheus_text(self) -> str:
@@ -254,8 +226,6 @@ class MetricsCollector:
             # Phase 4
             self.semantic_searches, self.hybrid_searches,
             self.embedding_operations, self.embedding_cache_hits,
-            # Phase 5
-            self.pipeline_searches, self.reranking_operations, self.query_classifications,
         ]:
             lines += metric.to_prometheus()
 
@@ -265,9 +235,6 @@ class MetricsCollector:
             # Phase 4
             self.embedding_latency, self.semantic_search_latency,
             self.hybrid_search_latency, self.vector_index_latency,
-            # Phase 5
-            self.reranking_latency, self.pipeline_latency,
-            self.fusion_latency, self.query_understanding_latency,
         ]:
             lines += hist.to_prometheus()
 
@@ -293,16 +260,10 @@ class MetricsCollector:
             "hybrid_searches_total":    self.hybrid_searches.value,
             "embedding_operations":     self.embedding_operations.value,
             "embedding_cache_hit_rate": round(emb_hit_rate, 4),
-            # Phase 5
-            "pipeline_searches_total":  self.pipeline_searches.value,
-            "reranking_operations":     self.reranking_operations.value,
-            "query_classifications":    self.query_classifications.value,
             "search_latency":           self.search_latency.snapshot(),
             "index_latency":            self.index_latency.snapshot(),
             "ranking_latency":          self.ranking_latency.snapshot(),
             "embedding_latency":        self.embedding_latency.snapshot(),
             "semantic_search_latency":  self.semantic_search_latency.snapshot(),
             "hybrid_search_latency":    self.hybrid_search_latency.snapshot(),
-            "reranking_latency":        self.reranking_latency.snapshot(),
-            "pipeline_latency":         self.pipeline_latency.snapshot(),
         }

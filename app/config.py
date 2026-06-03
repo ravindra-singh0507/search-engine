@@ -1,15 +1,16 @@
 """
-Search Engine Configuration — Phase 5
+Search Engine Configuration — Phase 4
 
-Phase 5 adds: RerankingConfig, PipelineConfig, QueryUnderstandingConfig,
-ExperimentConfig, PersonalizationConfig.
+All configuration dataclasses in one place.
+Phase 4 adds: EmbeddingConfig, ChunkingConfig, VectorStoreConfig,
+HybridSearchConfig, EvaluationConfig.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# ── Phase 1-3 configs ─────────────────────────────────────────────────────────
+# ── Phase 1-3 configs (unchanged) ─────────────────────────────────────────────
 
 @dataclass
 class DatabaseConfig:
@@ -93,108 +94,85 @@ class RankingWeights:
 
 @dataclass
 class EmbeddingConfig:
+    """
+    Controls the local embedding model.
+
+    model_name:  Any HuggingFace model that sentence-transformers supports.
+                 BAAI/bge-small-en-v1.5  → 384 dims, fast, excellent retrieval
+                 intfloat/e5-small-v2    → 384 dims, good cross-lingual support
+
+    batch_size:  How many chunks to embed in one forward pass.  Increase for
+                 GPU; decrease if you run OOM on CPU.
+
+    auto_embed:  When True, every newly indexed document is automatically
+                 chunked + embedded in a background thread.
+    """
     model_name: str  = "BAAI/bge-small-en-v1.5"
     batch_size: int  = 32
     device: str      = "cpu"
-    auto_embed: bool = False
+    auto_embed: bool = False     # enable once embeddings are indexed once
     cache_embeddings: bool = True
 
 
 @dataclass
 class ChunkingConfig:
-    strategy: str      = "sliding_window"
-    chunk_size: int    = 256
-    chunk_overlap: int = 32
-    min_chunk_words: int = 10
+    """
+    Controls how documents are split into passages before embedding.
+
+    strategy:       "fixed"          — non-overlapping equal-size chunks
+                    "sliding_window" — overlapping chunks (better recall)
+
+    chunk_size:     Chunk size in *words*.  The BGE model's token limit is
+                    512; a 256-word chunk maps to ~320 tokens on average
+                    (well within the limit).
+
+    chunk_overlap:  Words shared between adjacent chunks (sliding window only).
+                    Typically 10-20% of chunk_size.
+    """
+    strategy: str     = "sliding_window"
+    chunk_size: int   = 256    # words
+    chunk_overlap: int = 32    # words (sliding window only)
+    min_chunk_words: int = 10  # discard tiny chunks
 
 
 @dataclass
 class VectorStoreConfig:
+    """
+    Controls the FAISS vector index.
+
+    index_path:  Directory on disk where the FAISS index and ID-map are saved.
+    dimension:   Must match the embedding model's output dimension.
+    similarity:  "cosine" (default) uses L2-normalised vectors + inner product.
+    """
     index_path: Path = Path("data/faiss_index")
-    dimension: int   = 384
-    similarity: str  = "cosine"
+    dimension: int   = 384          # matches BAAI/bge-small-en-v1.5
+    similarity: str  = "cosine"     # "cosine" | "dot_product"
 
 
 @dataclass
 class HybridSearchConfig:
-    fusion_strategy: str   = "rrf"
-    rrf_k: int             = 60
-    bm25_weight: float     = 0.5
+    """
+    Controls how BM25 and semantic scores are fused.
+
+    fusion_strategy:  "rrf"    — Reciprocal Rank Fusion (Cormack 2009)
+                      "linear" — weighted linear combination of normalised scores
+
+    rrf_k:            RRF constant k = 60 is the empirical optimum from the
+                      original paper.  Larger k = less aggressive rank boosting.
+
+    bm25_weight / semantic_weight:  Used by "linear" strategy only.
+    """
+    fusion_strategy: str  = "rrf"
+    rrf_k: int            = 60
+    bm25_weight: float    = 0.5
     semantic_weight: float = 0.5
 
 
 @dataclass
 class EvaluationConfig:
-    eval_dataset_path: Path = Path("data/eval_dataset.json")
-    k_values: list[int]     = field(default_factory=lambda: [1, 3, 5, 10])
-
-
-# ── Phase 5 configs ────────────────────────────────────────────────────────────
-
-@dataclass
-class RerankingConfig:
-    """
-    Controls the cross-encoder re-ranking stage.
-
-    model_name:   Any HuggingFace cross-encoder compatible with sentence-transformers.
-                  ms-marco-MiniLM-L-6-v2 is fast (6 layers) and strong on MSMARCO.
-                  bge-reranker-base is competitive for multi-domain use.
-
-    top_k_rerank: How many candidates to pass to the reranker.  Higher = better
-                  quality but more latency.  50 is a good default; production
-                  systems typically use 100-200.
-
-    enabled:      Set False to skip reranking (useful for A/B comparisons).
-    """
-    model_name:   str  = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    top_k_rerank: int  = 50
-    batch_size:   int  = 32
-    device:       str  = "cpu"
-    enabled:      bool = True
-
-
-@dataclass
-class PipelineConfig:
-    """
-    Controls the multi-stage retrieval pipeline.
-
-    Stage 1: BM25 + Semantic retrieve bm25_candidates / semantic_candidates each.
-    Stage 2: Fuse with fusion_strategy.
-    Stage 3: Rerank top rerank_top_k candidates.
-    Stage 4: Return final_top_k.
-    """
-    bm25_candidates:     int  = 100
-    semantic_candidates: int  = 100
-    fusion_strategy:     str  = "rrf"     # rrf | combsum | combmnz | weighted | borda
-    rerank_top_k:        int  = 50
-    final_top_k:         int  = 10
-    use_reranker:        bool = True
-    use_semantic:        bool = True
-
-
-@dataclass
-class QueryUnderstandingConfig:
-    """Rule-based query intent classification."""
-    enabled:              bool  = True
-    confidence_threshold: float = 0.3   # below this → "informational" fallback
-
-
-@dataclass
-class ExperimentConfig:
-    """Controls retrieval experiment storage and limits."""
-    storage_path:    Path = Path("data/experiments")
-    max_experiments: int  = 100
-
-
-@dataclass
-class PersonalizationConfig:
-    """
-    User profile infrastructure.  Disabled by default until click data accumulates.
-    """
-    enabled:           bool = False
-    max_search_history: int = 100
-    max_click_history:  int = 500
-    decay_days:         int = 30
+    """Controls the retrieval evaluation framework."""
+    eval_dataset_path: Path    = Path("data/eval_dataset.json")
+    k_values: list[int]        = field(default_factory=lambda: [1, 3, 5, 10])
 
 
 # ── Top-level config ───────────────────────────────────────────────────────────
@@ -222,9 +200,3 @@ class EngineConfig:
     vector_store:    VectorStoreConfig    = field(default_factory=VectorStoreConfig)
     hybrid_search:   HybridSearchConfig   = field(default_factory=HybridSearchConfig)
     evaluation:      EvaluationConfig     = field(default_factory=EvaluationConfig)
-    # Phase 5
-    reranking:            RerankingConfig           = field(default_factory=RerankingConfig)
-    pipeline:             PipelineConfig            = field(default_factory=PipelineConfig)
-    query_understanding:  QueryUnderstandingConfig  = field(default_factory=QueryUnderstandingConfig)
-    experiment:           ExperimentConfig          = field(default_factory=ExperimentConfig)
-    personalization:      PersonalizationConfig     = field(default_factory=PersonalizationConfig)
