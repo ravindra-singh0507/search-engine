@@ -139,4 +139,26 @@ export const api = {
     get<Record<string, unknown>>(
       `/hybrid-search/explain?q=${encodeURIComponent(q)}&doc_id=${docId}`),
   vectorStoreStats:    () => get<Record<string, unknown>>('/vector-store/stats'),
+
+  // Phase 5
+  rerankSearch:      (q: string, topK = 10, fusion = 'rrf', rerank = true) =>
+    get<Record<string, unknown>>(
+      `/rerank-search?q=${encodeURIComponent(q)}&top_k=${topK}&fusion=${fusion}&rerank=${rerank}`),
+  rerankExplain:     (q: string, docId: number) =>
+    get<Record<string, unknown>>(
+      `/rerank/explain?q=${encodeURIComponent(q)}&doc_id=${docId}`),
+  fusionCompare:     (q: string, topK = 10) =>
+    get<Record<string, unknown>>(
+      `/fusion/compare?q=${encodeURIComponent(q)}&top_k=${topK}`),
+  queryIntent:       (q: string) =>
+    get<Record<string, unknown>>(`/query/intent?q=${encodeURIComponent(q)}`),
+  intentDistribution: () =>
+    get<Record<string, unknown>>('/query/intents/distribution'),
+  getExperiments:    () => get<Record<string, unknown>>('/experiments'),
+  runExperiment:     (name: string, systems: string) =>
+    post<Record<string, unknown>>(`/experiments/run?name=${encodeURIComponent(name)}&systems=${encodeURIComponent(systems)}`, {}),
+  rankingFeatures:   (q: string, docId: number) =>
+    get<Record<string, unknown>>(
+      `/ranking/features?q=${encodeURIComponent(q)}&doc_id=${docId}`),
+  pipelineStats:     () => get<Record<string, unknown>>('/retrieval-pipeline/stats'),
 }
