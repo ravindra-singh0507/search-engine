@@ -118,7 +118,7 @@ class FaissVectorStore:
 
     def __init__(self, config: VectorStoreConfig | None = None):
         self._config   = config or VectorStoreConfig()
-        self._index    = None          # faiss.IndexIDMap — lazy initialised
+        self._index    = None          # faiss.IndexIDMap2 — lazy initialised
         self._dim: int = self._config.dimension
 
         # Bidirectional mapping: FAISS int ID ↔ string chunk_id
@@ -141,8 +141,10 @@ class FaissVectorStore:
                 "faiss-cpu is required. Install with: pip install faiss-cpu"
             ) from exc
         base  = faiss.IndexFlatIP(self._dim)
-        self._index = faiss.IndexIDMap(base)
-        logger.debug("FAISS IndexFlatIP(%d) created", self._dim)
+        # IndexIDMap2 (not IndexIDMap) supports reconstruct() by external ID,
+        # which compact() requires to extract vectors for the live entries.
+        self._index = faiss.IndexIDMap2(base)
+        logger.debug("FAISS IndexFlatIP+IDMap2(%d) created", self._dim)
 
     # ── Mutations ─────────────────────────────────────────────────────────
 
@@ -200,13 +202,17 @@ class FaissVectorStore:
         """
         Rebuild the index without deleted vectors.
         Call periodically to reclaim memory after many deletions.
+
+        Uses IndexIDMap2.reconstruct(external_id) which is supported since
+        FAISS 1.7.  This is the fix for BUG-C1 where IndexIDMap (without the 2)
+        does not maintain a reverse ID map and therefore cannot reconstruct.
         """
         if not self._deleted:
             return
 
         import faiss
 
-        live_ids  = [fid for fid in self._id_to_chunk if fid not in self._deleted]
+        live_ids = [fid for fid in self._id_to_chunk if fid not in self._deleted]
         if not live_ids:
             self._index = None
             self._ensure_index()
@@ -215,20 +221,18 @@ class FaissVectorStore:
             self._deleted.clear()
             return
 
-        # Reconstruct vectors from the old index
-        old_index = self._index
+        # Reconstruct live vectors using IndexIDMap2.reconstruct(external_id)
         mat = np.zeros((len(live_ids), self._dim), dtype=np.float32)
         for i, fid in enumerate(live_ids):
-            old_index.reconstruct(fid, mat[i])
+            self._index.reconstruct(fid, mat[i])   # works because IDMap2 maintains reverse map
 
-        # Build fresh index
+        # Build fresh IndexIDMap2 without the deleted entries
         new_base  = faiss.IndexFlatIP(self._dim)
-        new_index = faiss.IndexIDMap(new_base)
+        new_index = faiss.IndexIDMap2(new_base)
         ids_np    = np.array(live_ids, dtype=np.int64)
         new_index.add_with_ids(mat, ids_np)
 
-        # Update internal state
-        self._index   = new_index
+        self._index = new_index
         self._deleted.clear()
         logger.info("FAISS compact: %d live vectors retained", len(live_ids))
 

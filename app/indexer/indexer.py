@@ -133,17 +133,11 @@ class Indexer:
         if doc is None:
             raise ValueError(f"Document {doc_id} not found")
 
-        c = self.db.conn.cursor()
-        c.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
-        self.db.conn.commit()
+        # Use Database abstraction instead of accessing db.conn directly
+        self.db.clear_postings_for_doc(doc_id)
 
-        # Tokenise body
         body_result = self.tokenizer.tokenize(content)
-        c.execute(
-            "UPDATE documents SET content = ?, word_count = ? WHERE doc_id = ?",
-            (content, body_result.token_count, doc_id),
-        )
-        self.db.conn.commit()
+        self.db.update_document_content(doc_id, content, body_result.token_count)
 
         postings_batch: list[tuple] = []
         body_freqs = self.tokenizer.get_term_frequencies(body_result.tokens)
@@ -157,6 +151,7 @@ class Indexer:
         for term, freq in title_freqs.items():
             term_id = self.db.get_or_create_term(term)
             positions = title_result.positions.get(term, [])
+            postings_batch.append((term_id, doc_id, freq, json.dumps(positions), "title"))
             postings_batch.append((term_id, doc_id, freq, json.dumps(positions), "title"))
 
         if postings_batch:
@@ -173,25 +168,12 @@ class Indexer:
         )
 
     def _update_document_frequencies(self, terms: set[str]) -> None:
-        for term_str in terms:
-            term_rec = self.db.get_term(term_str)
-            if term_rec is None:
-                continue
-            postings = self.db.get_postings_for_term(term_str)
-            unique_docs = len({p.doc_id for p in postings})
-            self.db.update_document_frequency(term_rec.term_id, unique_docs)
+        """
+        Update document_frequency for all affected terms.
+        Delegates to a single-SQL batch update instead of N individual queries.
+        """
+        self.db.batch_update_document_frequencies(list(terms))
 
     def get_inverted_index_snapshot(self) -> dict[str, list[int]]:
-        """Readable snapshot: term → [doc_ids].  Useful for debugging."""
-        c = self.db.conn.cursor()
-        c.execute("""
-            SELECT t.term, GROUP_CONCAT(DISTINCT p.doc_id) AS doc_ids
-            FROM terms t
-            JOIN postings p ON t.term_id = p.term_id
-            GROUP BY t.term
-            ORDER BY t.term
-        """)
-        return {
-            row["term"]: [int(d) for d in row["doc_ids"].split(",")]
-            for row in c.fetchall()
-        }
+        """Readable snapshot: term → [doc_ids].  Delegates to Database."""
+        return self.db.get_inverted_index_snapshot()

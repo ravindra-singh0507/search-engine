@@ -160,6 +160,11 @@ class SemanticSearchService:
     def explain(self, query: str, doc_id: int) -> dict:
         """
         Return a detailed explanation of why doc_id scored as it did.
+
+        Efficiency fix (BUG-C3): previously called search(top_k=200) once per
+        chunk, giving O(chunks × V·D) cost.  Now we do ONE search with a
+        generous top_k, build a score map, and look up each chunk's score in
+        O(1).  Total cost: O(V·D + chunks).
         """
         doc = self.db.get_document(doc_id)
         if doc is None:
@@ -168,23 +173,39 @@ class SemanticSearchService:
         query_vec = self.provider.embed_query(query)
         chunks    = self.db.get_chunks_for_doc(doc_id)
 
-        chunk_scores = []
-        for chunk in chunks:
-            # Retrieve the stored vector by doing a single-item search
-            chunk_search = self.vector_store.search(query_vec, top_k=200)
-            # Find this chunk's score if it appears
-            score = next((s for cid, s in chunk_search if cid == chunk.chunk_id), 0.0)
-            chunk_scores.append({"chunk_id": chunk.chunk_id,
-                                  "score": round(score, 6),
-                                  "text_preview": chunk.text[:100]})
+        if not chunks:
+            return {
+                "doc_id": doc_id, "title": doc.title,
+                "model": self.provider.model_name, "query": query,
+                "best_semantic_score": 0.0, "chunks": [], "total_chunks": 0,
+            }
 
+        chunk_ids_of_doc = {c.chunk_id for c in chunks}
+
+        # One FAISS search large enough to surface all chunks of this document.
+        # In the worst case (doc chunks are very dissimilar to query) they may
+        # fall outside the top-N; we cap at min(total, max(100, chunks * 20)).
+        total_vecs = self.vector_store.total_vectors
+        fetch_k    = min(total_vecs, max(100, len(chunks) * 20)) if total_vecs else 1
+        all_results = self.vector_store.search(query_vec, top_k=fetch_k)
+        score_map   = {cid: s for cid, s in all_results if cid in chunk_ids_of_doc}
+
+        chunk_scores = [
+            {
+                "chunk_id":    c.chunk_id,
+                "score":       round(score_map.get(c.chunk_id, 0.0), 6),
+                "text_preview": c.text[:100],
+            }
+            for c in chunks
+        ]
         best_score = max((c["score"] for c in chunk_scores), default=0.0)
+
         return {
-            "doc_id":       doc_id,
-            "title":        doc.title,
-            "model":        self.provider.model_name,
-            "query":        query,
+            "doc_id":              doc_id,
+            "title":               doc.title,
+            "model":               self.provider.model_name,
+            "query":               query,
             "best_semantic_score": round(best_score, 6),
-            "chunks":       chunk_scores,
-            "total_chunks": len(chunks),
+            "chunks":              chunk_scores,
+            "total_chunks":        len(chunks),
         }

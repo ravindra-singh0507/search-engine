@@ -419,6 +419,59 @@ class Database:
 
     # ── Term Operations ─────────────────────────────────────────────────────
 
+    def clear_postings_for_doc(self, doc_id: int) -> None:
+        """Delete all postings for a document (used by reindex_document)."""
+        self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+        self.conn.commit()
+
+    def update_document_content(self, doc_id: int, content: str,
+                                word_count: int) -> None:
+        """Update content and word_count for an existing document."""
+        self.conn.execute(
+            "UPDATE documents SET content = ?, word_count = ? WHERE doc_id = ?",
+            (content, word_count, doc_id),
+        )
+        self.conn.commit()
+
+    def batch_update_document_frequencies(self, terms: list[str]) -> None:
+        """
+        Recalculate document_frequency for all given terms in a SINGLE SQL
+        statement, replacing the O(N · DB_queries) loop in the old
+        _update_document_frequencies implementation.
+        """
+        if not terms:
+            return
+        placeholders = ",".join("?" for _ in terms)
+        self.conn.execute(
+            f"""
+            UPDATE terms
+            SET document_frequency = (
+                SELECT COUNT(DISTINCT doc_id) FROM postings
+                WHERE postings.term_id = terms.term_id
+            )
+            WHERE term IN ({placeholders})
+            """,
+            list(terms),
+        )
+        self.conn.commit()
+
+    def get_inverted_index_snapshot(self) -> dict[str, list[int]]:
+        """
+        Readable snapshot: term → [doc_ids].  Useful for debugging.
+        Moved here from Indexer to eliminate db.conn direct access in callers.
+        """
+        rows = self.conn.execute("""
+            SELECT t.term, GROUP_CONCAT(DISTINCT p.doc_id) AS doc_ids
+            FROM terms t
+            JOIN postings p ON t.term_id = p.term_id
+            GROUP BY t.term
+            ORDER BY t.term
+        """).fetchall()
+        return {
+            row["term"]: [int(d) for d in row["doc_ids"].split(",")]
+            for row in rows
+        }
+
     def get_or_create_term(self, term: str) -> int:
         row = self.conn.execute(
             "SELECT term_id FROM terms WHERE term = ?", (term,)

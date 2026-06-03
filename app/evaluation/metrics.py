@@ -220,8 +220,6 @@ def ndcg_at_k(
     IDCG@K = DCG of the ideal (perfect) ranking of relevant documents.
     Returns 0.0 if no relevant documents exist.
     """
-    ideal = sorted(relevance_scores.values(), reverse=True)
-    ideal_list = list(relevance_scores.keys())
     # Build ideal ranking: sort doc IDs by descending relevance score
     ideal_ranked = sorted(
         (doc_id for doc_id in relevance_scores if relevance_scores[doc_id] > 0),

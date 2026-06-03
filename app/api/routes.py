@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 class IndexDocumentRequest(BaseModel):
     title:    str = Field(..., min_length=1, max_length=500)
-    content:  str = Field(..., min_length=1)
+    content:  str = Field(..., min_length=1, max_length=1_000_000)   # 1 MB text cap (SEC-3)
     source:   str = Field(default="api", max_length=1000)
     doc_type: str = Field(default="text", max_length=50)
 
@@ -730,7 +730,8 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
 
     @app.get("/evaluation",
              summary="Run retrieval evaluation against the test dataset",
-             tags=["Evaluation"])
+             tags=["Evaluation"],
+             dependencies=[Depends(_verify_api_key), Depends(_rate_limit)])
     def run_evaluation(
         top_k: int = Query(default=10, ge=1, le=100),
         systems: str = Query(
