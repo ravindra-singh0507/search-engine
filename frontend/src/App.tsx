@@ -1,20 +1,24 @@
 import React from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
-import SearchPage        from './pages/SearchPage'
-import AnalyticsPage     from './pages/AnalyticsPage'
-import MetricsPage       from './pages/MetricsPage'
-import CrawlerPage       from './pages/CrawlerPage'
+import SearchPage         from './pages/SearchPage'
+import AnalyticsPage      from './pages/AnalyticsPage'
+import MetricsPage        from './pages/MetricsPage'
+import CrawlerPage        from './pages/CrawlerPage'
 import SemanticSearchPage from './pages/SemanticSearchPage'
 import HybridSearchPage   from './pages/HybridSearchPage'
+import RerankerPage       from './pages/RerankerPage'
+import ExperimentsPage    from './pages/ExperimentsPage'
 import './index.css'
 
 const NAV = [
-  ['/',         'Search'],
-  ['/semantic', 'Semantic'],
-  ['/hybrid',   'Hybrid'],
-  ['/analytics','Analytics'],
-  ['/metrics',  'Metrics'],
-  ['/crawler',  'Crawler'],
+  ['/',            'Search'],
+  ['/semantic',    'Semantic'],
+  ['/hybrid',      'Hybrid'],
+  ['/reranker',    'Reranker'],
+  ['/experiments', 'Experiments'],
+  ['/analytics',   'Analytics'],
+  ['/metrics',     'Metrics'],
+  ['/crawler',     'Crawler'],
 ] as const
 
 export default function App() {
@@ -31,12 +35,14 @@ export default function App() {
       </nav>
       <main>
         <Routes>
-          <Route path="/"          element={<SearchPage />} />
-          <Route path="/semantic"  element={<SemanticSearchPage />} />
-          <Route path="/hybrid"    element={<HybridSearchPage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
-          <Route path="/metrics"   element={<MetricsPage />} />
-          <Route path="/crawler"   element={<CrawlerPage />} />
+          <Route path="/"            element={<SearchPage />} />
+          <Route path="/semantic"    element={<SemanticSearchPage />} />
+          <Route path="/hybrid"      element={<HybridSearchPage />} />
+          <Route path="/reranker"    element={<RerankerPage />} />
+          <Route path="/experiments" element={<ExperimentsPage />} />
+          <Route path="/analytics"   element={<AnalyticsPage />} />
+          <Route path="/metrics"     element={<MetricsPage />} />
+          <Route path="/crawler"     element={<CrawlerPage />} />
         </Routes>
       </main>
     </BrowserRouter>
