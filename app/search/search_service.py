@@ -223,7 +223,9 @@ class SearchService:
         self.cache.put(query, top_k, result)
 
         logger.info(
-            "Search %r: %d candidates → %d results in %.1f ms (cache miss)",
+            # Truncate query in logs to avoid writing raw user input (PII) to disk.
+            # Full query is stored in search_logs DB table for analytics.
+            "Search [%.40s...]: %d candidates → %d results in %.1f ms (cache miss)",
             query, len(candidate_ids), len(ranked), elapsed,
         )
         return result

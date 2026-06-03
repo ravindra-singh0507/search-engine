@@ -43,6 +43,12 @@ from app.config import SpellCheckConfig
 
 logger = logging.getLogger(__name__)
 
+# Boolean operators and field-search keywords that must never be corrected.
+# "AND" → "end", "OR" → something else, "NOT" → "not" (fine but prevents
+# subtle semantic changes).  Field prefixes (title:, url:) are split before
+# they reach correct_query so they don't need special handling here.
+_PROTECTED_TOKENS: frozenset[str] = frozenset({"AND", "OR", "NOT"})
+
 
 @dataclass
 class CorrectionSuggestion:
@@ -133,10 +139,17 @@ class SpellChecker:
         Attempt to auto-correct each token in a multi-word query.
         Only replaces a token if correction confidence ≥ 0.5.
         Returns the possibly-corrected query string.
+
+        Boolean operators (AND, OR, NOT) are never spell-corrected — they
+        would otherwise be corrupted into real words (e.g. "AND" → "end").
         """
         tokens = query.strip().split()
         corrected = []
         for token in tokens:
+            # Never spell-correct Boolean operators
+            if token.upper() in _PROTECTED_TOKENS:
+                corrected.append(token)
+                continue
             suggestions = self.correct(token, top_n=1)
             if suggestions and suggestions[0].confidence >= 0.5:
                 corrected.append(suggestions[0].suggestion)

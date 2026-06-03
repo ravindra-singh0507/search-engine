@@ -683,3 +683,238 @@ class TestPhase4APIEndpoints:
             r = c.get("/hybrid-search/explain?q=test&doc_id=999")
             assert r.status_code == 200
             assert "error" in r.json()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BUG REGRESSION TESTS (audit fixes)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBugC1CompactUsesIDMap2:
+    """compact() must not crash — requires IndexIDMap2, not IndexIDMap."""
+
+    def _unit_vec(self, dim: int, seed: int):
+        import numpy as np
+        rng = np.random.RandomState(seed)
+        v   = rng.randn(dim).astype(np.float32)
+        v  /= np.linalg.norm(v)
+        return v.tolist()
+
+    def test_compact_after_deletion_does_not_crash(self):
+        from app.vector_store.store import FaissVectorStore
+        store = FaissVectorStore(VectorStoreConfig(dimension=16))
+        vecs = [self._unit_vec(16, i) for i in range(5)]
+        ids  = [f"chunk_{i}" for i in range(5)]
+        store.add(ids, vecs)
+
+        store.delete(["chunk_1", "chunk_3"])
+        assert store.total_vectors == 3
+
+        # This used to crash with RuntimeError on IndexIDMap.
+        # With IndexIDMap2 it must succeed.
+        store.compact()
+        assert store.total_vectors == 3
+
+    def test_compact_all_deleted_resets_index(self):
+        from app.vector_store.store import FaissVectorStore
+        store = FaissVectorStore(VectorStoreConfig(dimension=16))
+        store.add(["a"], [self._unit_vec(16, 1)])
+        store.delete(["a"])
+        store.compact()
+        assert store.total_vectors == 0
+
+    def test_compact_search_still_correct_after(self):
+        from app.vector_store.store import FaissVectorStore
+        store = FaissVectorStore(VectorStoreConfig(dimension=16))
+        v0 = self._unit_vec(16, 0)
+        v1 = self._unit_vec(16, 1)
+        v2 = self._unit_vec(16, 2)
+        store.add(["keep_a", "delete_b", "keep_c"], [v0, v1, v2])
+        store.delete(["delete_b"])
+        store.compact()
+
+        results = store.search(v0, top_k=5)
+        chunk_ids = [r[0] for r in results]
+        assert "delete_b" not in chunk_ids
+        assert "keep_a" in chunk_ids
+
+
+class TestBugC2OperatorSpellProtection:
+    """Boolean operators must never be spell-corrected."""
+
+    def _checker_with_vocab(self):
+        from app.spellcheck.spell_checker import SpellChecker
+        from app.config import SpellCheckConfig
+        ch = SpellChecker(SpellCheckConfig(max_edit_distance=2))
+        # "end" is close to "and"; "ore" to "or" etc. — vocab words that could
+        # attract corrections if operators weren't protected.
+        ch.build_vocabulary([
+            "python", "search", "engine", "end", "ore", "note",
+            "java", "backend", "machine", "learning",
+        ])
+        return ch
+
+    def test_and_operator_not_corrected(self):
+        ch = self._checker_with_vocab()
+        result = ch.correct_query("python AND java")
+        assert "AND" in result.upper()
+        # "AND" must survive — not become "end" or anything else
+        assert "AND" in result
+
+    def test_or_operator_not_corrected(self):
+        ch = self._checker_with_vocab()
+        result = ch.correct_query("python OR java")
+        assert "OR" in result
+
+    def test_not_operator_not_corrected(self):
+        ch = self._checker_with_vocab()
+        result = ch.correct_query("python NOT java")
+        assert "NOT" in result
+
+    def test_typo_beside_operator_corrected(self):
+        ch = self._checker_with_vocab()
+        result = ch.correct_query("pythn AND java")
+        # "pythn" should be corrected but AND preserved
+        assert "AND" in result
+        assert "pythn" not in result   # corrected to "python"
+
+    def test_mixed_case_operator_not_corrected(self):
+        ch = self._checker_with_vocab()
+        result = ch.correct_query("python and java")
+        # lowercase "and" is a stop word → not in vocab, but also low confidence
+        # The key thing is it should remain unchanged
+        tokens = result.split()
+        assert "and" in tokens
+
+
+class TestBugC3ExplainEfficiency:
+    """explain() must do ONE search, not one per chunk."""
+
+    def _setup(self, tmp_path):
+        from app.database.db import Database
+        from app.indexer.indexer import Indexer
+        from app.tokenizer.tokenizer import Tokenizer
+        from app.embeddings.pipeline import EmbeddingPipeline
+        from app.vector_store.store import FaissVectorStore
+        from app.semantic_search.semantic_service import SemanticSearchService
+
+        db  = Database(tmp_path / "t.db")
+        db.connect()
+        tok = Tokenizer()
+        idx = Indexer(db, tok)
+        idx.index_document("Python Guide",
+                           "Python is a powerful language for web development",
+                           source="s1")
+
+        provider     = MockEmbeddingProvider(dim=16)
+        vs           = FaissVectorStore(VectorStoreConfig(dimension=16))
+        pipeline     = EmbeddingPipeline(
+            db=db, provider=provider, cache=EmbeddingCache(db),
+            vector_store=vs, chunker=make_chunker(ChunkingConfig(chunk_size=50)),
+            emb_config=EmbeddingConfig(cache_embeddings=False, batch_size=4),
+            vs_config=VectorStoreConfig(dimension=16, index_path=tmp_path/"idx"),
+        )
+        pipeline.index_all()
+        svc = SemanticSearchService(db=db, provider=provider, vector_store=vs)
+        return db, svc
+
+    def test_explain_returns_correct_structure(self, tmp_path):
+        db, svc = self._setup(tmp_path)
+        result = svc.explain("python web", doc_id=1)
+        assert "best_semantic_score" in result
+        assert "chunks" in result
+        assert isinstance(result["chunks"], list)
+        db.close()
+
+    def test_explain_single_search_call(self, tmp_path):
+        """Verify explain() calls vector_store.search exactly once."""
+        from unittest.mock import patch
+        db, svc = self._setup(tmp_path)
+        call_count = [0]
+        original = svc.vector_store.search
+
+        def counting_search(*args, **kwargs):
+            call_count[0] += 1
+            return original(*args, **kwargs)
+
+        svc.vector_store.search = counting_search
+        svc.explain("python web", doc_id=1)
+        # Must be exactly 1, not N (one per chunk)
+        assert call_count[0] == 1
+        db.close()
+
+
+class TestBugC4NdcgNoDeadCode:
+    """ndcg_at_k must not have the dead `ideal` / `ideal_list` variables."""
+
+    def test_ndcg_correct_result(self):
+        # Perfect ranking: should score 1.0
+        rel = {1: 3.0, 2: 2.0, 3: 1.0}
+        assert ndcg_at_k([1, 2, 3], rel, k=3) == pytest.approx(1.0)
+
+    def test_ndcg_imperfect_ranking(self):
+        rel = {1: 3.0, 2: 2.0}
+        # retrieved=[2,1] vs ideal=[1,2]: DCG([2,1]) < DCG([1,2])
+        assert ndcg_at_k([2, 1], rel, k=2) < 1.0
+
+    def test_ndcg_no_relevant_returns_zero(self):
+        assert ndcg_at_k([1, 2, 3], {}, k=3) == 0.0
+
+    def test_ndcg_source_has_no_dead_variables(self):
+        """Confirm the dead-code lines `ideal = ...` are gone from source."""
+        import inspect
+        from app.evaluation import metrics as m
+        source = inspect.getsource(m.ndcg_at_k)
+        # These two dead-code lines must not appear in the function body
+        assert "ideal = sorted(relevance_scores" not in source
+        assert "ideal_list = list(relevance_scores.keys())" not in source
+
+
+class TestPerfBatchDFUpdate:
+    """_update_document_frequencies must issue a single SQL call."""
+
+    def test_batch_update_called_once_per_index(self, tmp_path):
+        from app.database.db import Database
+        from app.indexer.indexer import Indexer
+        from app.tokenizer.tokenizer import Tokenizer
+        from unittest.mock import patch
+
+        db  = Database(tmp_path / "t.db")
+        db.connect()
+        tok = Tokenizer()
+        idx = Indexer(db, tok)
+
+        # Patch the batch method on the Database instance
+        call_args = []
+        original = db.batch_update_document_frequencies
+
+        def recording(*args, **kwargs):
+            call_args.append(args)
+            return original(*args, **kwargs)
+
+        db.batch_update_document_frequencies = recording
+        idx.index_document("Test", "python web backend machine learning", source="s1")
+
+        # Must be called exactly once (batch), not once per unique term
+        assert len(call_args) == 1, (
+            f"Expected 1 batch DF update call, got {len(call_args)}. "
+            "Performance regression: _update_document_frequencies is N+1 again."
+        )
+        # All terms passed in the single call
+        terms_passed = set(call_args[0][0])
+        assert "python" in terms_passed
+        assert "web" in terms_passed
+        db.close()
+
+
+class TestSpellCheckerBodySizeLimit:
+    """IndexDocumentRequest must reject content > 1 MB."""
+
+    def test_content_over_1mb_rejected(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from app.api.routes import create_app
+        from app.config import EngineConfig, DatabaseConfig
+        cfg = EngineConfig(database=DatabaseConfig(db_path=tmp_path / "t.db"))
+        with TestClient(create_app(cfg)) as client:
+            big_content = "x" * (1_000_001)
+            r = client.post("/index", json={"title": "T", "content": big_content})
+            assert r.status_code == 422   # Pydantic validation error
