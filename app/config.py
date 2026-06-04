@@ -1,8 +1,8 @@
 """
-Search Engine Configuration — Phase 5
+Search Engine Configuration — Phase 6
 
-Phase 5 adds: RerankingConfig, PipelineConfig, QueryUnderstandingConfig,
-ExperimentConfig, PersonalizationConfig.
+Phase 6 adds: LLMConfig, ContextConfig, MemoryConfig, CitationConfig,
+GroundingConfig, RAGConfig — for the RAG / Knowledge Assistant layer.
 """
 
 from dataclasses import dataclass, field
@@ -197,6 +197,125 @@ class PersonalizationConfig:
     decay_days:         int = 30
 
 
+# ── Phase 6 configs ────────────────────────────────────────────────────────────
+
+@dataclass
+class LLMConfig:
+    """
+    Controls which LLM backend the RAG pipeline uses.
+
+    provider:    "mock" (tests), "ollama" (local), "openai", "anthropic", "gemini"
+    model_name:  Provider-specific model ID.
+    base_url:    API base for self-hosted models (Ollama default: localhost:11434).
+    api_key_env: Name of the environment variable holding the API key.
+                 Leave blank for Ollama or when the key is set another way.
+    max_tokens:  Maximum completion tokens the LLM may generate.
+    temperature: 0.0 = deterministic; higher = more creative.
+    timeout:     HTTP request timeout in seconds.
+    max_retries: How many times to retry on 5xx / timeout errors.
+    """
+    provider:    str   = "mock"
+    model_name:  str   = "mock-llm-v1"
+    base_url:    str   = "http://localhost:11434"
+    api_key_env: str   = ""
+    max_tokens:  int   = 2048
+    temperature: float = 0.1
+    timeout:     int   = 60
+    max_retries: int   = 3
+
+
+@dataclass
+class ContextConfig:
+    """
+    Controls how retrieved chunks are selected and assembled into LLM context.
+
+    max_tokens:       Hard token budget for the context block.
+    max_chunks:       Maximum number of chunks regardless of token budget.
+    min_score:        Drop chunks below this retrieval score.
+    dedup_threshold:  Jaccard similarity above which two chunks are considered
+                      duplicates; only the higher-scoring one is kept.
+    use_mmr:          Maximal Marginal Relevance diversification (True = avoid
+                      repeating the same information from different chunks).
+    diversity_lambda: MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity.
+    """
+    max_tokens:       int   = 3000
+    max_chunks:       int   = 10
+    min_score:        float = 0.05
+    dedup_threshold:  float = 0.80
+    use_mmr:          bool  = True
+    diversity_lambda: float = 0.6
+
+
+@dataclass
+class MemoryConfig:
+    """
+    Controls conversation history management.
+
+    max_messages:   Hard cap on messages stored per session.
+    context_window: How many recent messages to include in the prompt.
+    summarize_at:   When the session exceeds this many messages, older turns
+                    are summarized and replaced with a summary message so the
+                    context window stays bounded.
+    persist:        If True, sessions are written to SQLite.
+    """
+    max_messages:   int  = 50
+    context_window: int  = 8
+    summarize_at:   int  = 30
+    persist:        bool = True
+
+
+@dataclass
+class CitationConfig:
+    """
+    Controls how source attributions are attached to generated answers.
+
+    style:           "numbered" → [1], [2]; "inline" → (Source: title).
+    include_snippet: Include a brief excerpt from the source in the reference.
+    max_snippet_len: Maximum characters for the reference snippet.
+    """
+    style:           str  = "numbered"   # "numbered" | "inline"
+    include_snippet: bool = True
+    max_snippet_len: int  = 200
+
+
+@dataclass
+class GroundingConfig:
+    """
+    Controls hallucination / grounding verification.
+
+    threshold:       Answers with grounding_score below this are flagged as
+                     potentially ungrounded.
+    method:          "overlap" = token overlap (fast, no extra deps);
+                     "nli" = Natural Language Inference (requires model).
+    min_support_len: Minimum tokens an answer sentence must share with the
+                     context to count as 'supported'.
+    """
+    threshold:       float = 0.25
+    method:          str   = "overlap"
+    min_support_len: int   = 4
+
+
+@dataclass
+class RAGConfig:
+    """
+    Top-level config for the RAG / Knowledge Assistant layer.
+
+    enable_multi_step:   Decompose complex queries into sub-queries.
+    max_subqueries:      Maximum sub-queries for multi-step retrieval.
+    stream_chunk_size:   Characters per SSE token chunk.
+    response_cache_size: LRU cache for identical (query, session) pairs.
+    """
+    llm:                 LLMConfig      = field(default_factory=LLMConfig)
+    context:             ContextConfig  = field(default_factory=ContextConfig)
+    memory:              MemoryConfig   = field(default_factory=MemoryConfig)
+    citation:            CitationConfig = field(default_factory=CitationConfig)
+    grounding:           GroundingConfig = field(default_factory=GroundingConfig)
+    enable_multi_step:   bool = True
+    max_subqueries:      int  = 3
+    stream_chunk_size:   int  = 8
+    response_cache_size: int  = 128
+
+
 # ── Top-level config ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -228,3 +347,5 @@ class EngineConfig:
     query_understanding:  QueryUnderstandingConfig  = field(default_factory=QueryUnderstandingConfig)
     experiment:           ExperimentConfig          = field(default_factory=ExperimentConfig)
     personalization:      PersonalizationConfig     = field(default_factory=PersonalizationConfig)
+    # Phase 6
+    rag:                  RAGConfig                 = field(default_factory=RAGConfig)

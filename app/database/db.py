@@ -437,6 +437,112 @@ class Database:
         ]:
             c.execute(stmt)
 
+        # ── Phase 6 tables ─────────────────────────────────────────────────
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_sessions (
+                session_id    TEXT PRIMARY KEY,
+                user_id       TEXT NOT NULL DEFAULT '',
+                message_count INTEGER NOT NULL DEFAULT 0,
+                is_active     INTEGER NOT NULL DEFAULT 1,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                message_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id    TEXT NOT NULL REFERENCES conversation_sessions(session_id) ON DELETE CASCADE,
+                role          TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+                content       TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at    TEXT NOT NULL
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS citations (
+                citation_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT,
+                query           TEXT NOT NULL,
+                doc_id          INTEGER,
+                chunk_id        TEXT,
+                citation_index  INTEGER NOT NULL DEFAULT 1,
+                snippet         TEXT,
+                relevance_score REAL,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS grounding_reports (
+                report_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id         TEXT,
+                query              TEXT NOT NULL,
+                grounding_score    REAL NOT NULL DEFAULT 0,
+                support_score      REAL NOT NULL DEFAULT 0,
+                hallucination_risk TEXT NOT NULL DEFAULT 'medium',
+                report_json        TEXT,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS rag_evaluations (
+                eval_id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                query                 TEXT NOT NULL,
+                faithfulness          REAL,
+                groundedness          REAL,
+                answer_relevance      REAL,
+                context_precision     REAL,
+                context_recall        REAL,
+                citation_accuracy     REAL,
+                response_completeness REAL,
+                overall_score         REAL,
+                eval_json             TEXT,
+                created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS answer_confidence (
+                confidence_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id           TEXT,
+                query                TEXT NOT NULL,
+                retrieval_confidence REAL,
+                context_confidence   REAL,
+                grounding_confidence REAL,
+                citation_confidence  REAL,
+                overall_confidence   REAL,
+                tier                 TEXT,
+                created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS memory_snapshots (
+                snapshot_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id    TEXT NOT NULL,
+                snapshot_type TEXT NOT NULL DEFAULT 'full',
+                content_json  TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Phase 6 indexes
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_conv_sessions_user    ON conversation_sessions(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_messages_session ON conversation_messages(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_citations_session     ON citations(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_grounding_session     ON grounding_reports(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_rag_eval_score        ON rag_evaluations(overall_score)",
+            "CREATE INDEX IF NOT EXISTS idx_confidence_session    ON answer_confidence(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_memory_session        ON memory_snapshots(session_id)",
+        ]:
+            c.execute(stmt)
+
         self.conn.commit()
 
     def _migrate(self) -> None:
@@ -1222,3 +1328,185 @@ class Database:
             "ORDER BY updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Phase 6: Conversation Sessions ─────────────────────────────────────────
+
+    def create_conversation_session(self, session_id: str, user_id: str,
+                                     created_at: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO conversation_sessions "
+            "(session_id, user_id, created_at, updated_at) VALUES (?,?,?,?)",
+            (session_id, user_id, created_at, created_at),
+        )
+        self.conn.commit()
+
+    def get_conversation_session(self, session_id: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM conversation_sessions WHERE session_id = ?",
+            (session_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_session_timestamp(self, session_id: str, updated_at: str) -> None:
+        self.conn.execute(
+            "UPDATE conversation_sessions SET updated_at=?, "
+            "message_count = (SELECT COUNT(*) FROM conversation_messages WHERE session_id=?) "
+            "WHERE session_id=?",
+            (updated_at, session_id, session_id),
+        )
+        self.conn.commit()
+
+    def delete_conversation_session(self, session_id: str) -> bool:
+        c = self.conn.cursor()
+        c.execute("DELETE FROM conversation_messages WHERE session_id=?", (session_id,))
+        c.execute("DELETE FROM conversation_sessions WHERE session_id=?", (session_id,))
+        self.conn.commit()
+        return c.rowcount > 0
+
+    def list_conversation_sessions(self, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT session_id, user_id, message_count, is_active, created_at, updated_at "
+            "FROM conversation_sessions ORDER BY updated_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 6: Conversation Messages ─────────────────────────────────────────
+
+    def insert_conversation_message(self, session_id: str, role: str,
+                                     content: str, metadata_json: str,
+                                     created_at: str) -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO conversation_messages "
+            "(session_id, role, content, metadata_json, created_at) VALUES (?,?,?,?,?)",
+            (session_id, role, content, metadata_json, created_at),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_conversation_messages(self, session_id: str,
+                                   limit: int = 200) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM conversation_messages WHERE session_id=? "
+            "ORDER BY message_id ASC LIMIT ?",
+            (session_id, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 6: Citations ──────────────────────────────────────────────────────
+
+    def insert_citation(self, session_id: str, query: str, doc_id: int,
+                         chunk_id: str, citation_index: int,
+                         snippet: str, relevance_score: float) -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO citations "
+            "(session_id, query, doc_id, chunk_id, citation_index, snippet, relevance_score) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (session_id, query, doc_id, chunk_id, citation_index, snippet, relevance_score),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_citations_for_session(self, session_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM citations WHERE session_id=? ORDER BY created_at DESC",
+            (session_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 6: Grounding Reports ─────────────────────────────────────────────
+
+    def insert_grounding_report(self, session_id: str, query: str,
+                                 grounding_score: float, support_score: float,
+                                 hallucination_risk: str, report_json: str) -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO grounding_reports "
+            "(session_id, query, grounding_score, support_score, "
+            "hallucination_risk, report_json) VALUES (?,?,?,?,?,?)",
+            (session_id, query, grounding_score, support_score,
+             hallucination_risk, report_json),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_grounding_stats(self) -> dict:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total, AVG(grounding_score) AS avg_score, "
+            "SUM(CASE WHEN hallucination_risk='high' THEN 1 ELSE 0 END) AS high_risk "
+            "FROM grounding_reports"
+        ).fetchone()
+        return dict(row) if row else {}
+
+    # ── Phase 6: RAG Evaluations ───────────────────────────────────────────────
+
+    def insert_rag_evaluation(self, query: str, faithfulness: float,
+                               groundedness: float, answer_relevance: float,
+                               context_precision: float, context_recall: float,
+                               citation_accuracy: float,
+                               response_completeness: float,
+                               overall_score: float, eval_json: str) -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO rag_evaluations (query, faithfulness, groundedness, "
+            "answer_relevance, context_precision, context_recall, "
+            "citation_accuracy, response_completeness, overall_score, eval_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (query, faithfulness, groundedness, answer_relevance,
+             context_precision, context_recall, citation_accuracy,
+             response_completeness, overall_score, eval_json),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_rag_eval_stats(self) -> dict:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total, AVG(overall_score) AS avg_overall, "
+            "AVG(faithfulness) AS avg_faithfulness, "
+            "AVG(groundedness) AS avg_groundedness "
+            "FROM rag_evaluations"
+        ).fetchone()
+        return dict(row) if row else {}
+
+    # ── Phase 6: Answer Confidence ─────────────────────────────────────────────
+
+    def insert_answer_confidence(self, session_id: str, query: str,
+                                  retrieval_conf: float, context_conf: float,
+                                  grounding_conf: float, citation_conf: float,
+                                  overall_conf: float, tier: str) -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO answer_confidence "
+            "(session_id, query, retrieval_confidence, context_confidence, "
+            "grounding_confidence, citation_confidence, overall_confidence, tier) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (session_id, query, retrieval_conf, context_conf,
+             grounding_conf, citation_conf, overall_conf, tier),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_confidence_stats(self) -> dict:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total, AVG(overall_confidence) AS avg_confidence, "
+            "SUM(CASE WHEN tier='high' THEN 1 ELSE 0 END) AS high_count, "
+            "SUM(CASE WHEN tier='low'  THEN 1 ELSE 0 END) AS low_count "
+            "FROM answer_confidence"
+        ).fetchone()
+        return dict(row) if row else {}
+
+    # ── Phase 6: Memory Snapshots ──────────────────────────────────────────────
+
+    def insert_memory_snapshot(self, session_id: str, snapshot_type: str,
+                                content_json: str, message_count: int) -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO memory_snapshots "
+            "(session_id, snapshot_type, content_json, message_count) "
+            "VALUES (?,?,?,?)",
+            (session_id, snapshot_type, content_json, message_count),
+        )
+        self.conn.commit()
+        return c.lastrowid
