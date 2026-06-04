@@ -175,6 +175,23 @@ class MetricsCollector:
         self.fusion_latency           = Histogram("fusion_latency_ms",           (1, 2, 5, 10, 25))
         self.query_understanding_latency = Histogram("query_understanding_latency_ms", (1, 2, 5, 10))
 
+        # Phase 6 counters
+        self.rag_queries              = Counter("rag_queries_total")
+        self.rag_tokens_used          = Counter("rag_tokens_used_total")
+        self.chat_sessions            = Counter("chat_sessions_total")
+        self.streaming_requests       = Counter("streaming_requests_total")
+        self.grounding_checks         = Counter("grounding_checks_total")
+        self.high_risk_responses      = Counter("high_risk_responses_total")
+        self.citations_generated      = Counter("citations_generated_total")
+
+        # Phase 6 histograms
+        rag_buckets = (50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000)
+        self.rag_total_latency        = Histogram("rag_total_latency_ms",     rag_buckets)
+        self.rag_llm_latency          = Histogram("rag_llm_latency_ms",       rag_buckets)
+        self.rag_context_latency      = Histogram("rag_context_latency_ms",   (1, 5, 10, 25, 50))
+        self.rag_grounding_latency    = Histogram("rag_grounding_latency_ms", (1, 5, 10, 25, 50))
+        self.rag_citation_latency     = Histogram("rag_citation_latency_ms",  (1, 5, 10, 25, 50))
+
         self._start_time = time.time()
 
     # ── Record helpers ─────────────────────────────────────────────────────
@@ -238,6 +255,36 @@ class MetricsCollector:
     def record_fusion(self, latency_ms: float) -> None:
         self.fusion_latency.observe(latency_ms)
 
+    # Phase 6 record helpers
+    def record_rag_query(self, total_ms: float, tokens: int = 0) -> None:
+        self.rag_queries.inc()
+        self.rag_total_latency.observe(total_ms)
+        if tokens:
+            self.rag_tokens_used.inc(tokens)
+
+    def record_rag_llm(self, latency_ms: float) -> None:
+        self.rag_llm_latency.observe(latency_ms)
+
+    def record_rag_context(self, latency_ms: float) -> None:
+        self.rag_context_latency.observe(latency_ms)
+
+    def record_rag_grounding(self, latency_ms: float, is_high_risk: bool = False) -> None:
+        self.grounding_checks.inc()
+        self.rag_grounding_latency.observe(latency_ms)
+        if is_high_risk:
+            self.high_risk_responses.inc()
+
+    def record_rag_citation(self, latency_ms: float, count: int = 0) -> None:
+        self.rag_citation_latency.observe(latency_ms)
+        if count:
+            self.citations_generated.inc(count)
+
+    def record_chat_session(self) -> None:
+        self.chat_sessions.inc()
+
+    def record_streaming(self) -> None:
+        self.streaming_requests.inc()
+
     # ── Reporting ─────────────────────────────────────────────────────────
 
     def to_prometheus_text(self) -> str:
@@ -256,6 +303,10 @@ class MetricsCollector:
             self.embedding_operations, self.embedding_cache_hits,
             # Phase 5
             self.pipeline_searches, self.reranking_operations, self.query_classifications,
+            # Phase 6
+            self.rag_queries, self.rag_tokens_used, self.chat_sessions,
+            self.streaming_requests, self.grounding_checks,
+            self.high_risk_responses, self.citations_generated,
         ]:
             lines += metric.to_prometheus()
 
@@ -268,6 +319,10 @@ class MetricsCollector:
             # Phase 5
             self.reranking_latency, self.pipeline_latency,
             self.fusion_latency, self.query_understanding_latency,
+            # Phase 6
+            self.rag_total_latency, self.rag_llm_latency,
+            self.rag_context_latency, self.rag_grounding_latency,
+            self.rag_citation_latency,
         ]:
             lines += hist.to_prometheus()
 
