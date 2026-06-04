@@ -311,12 +311,13 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         logger.info("Engine stopped")
 
     app = FastAPI(
-        title="Search Engine — Phase 4 Semantic Retrieval Platform",
+        title="Search Engine — Phase 6 RAG & Knowledge Assistant Platform",
         description=(
-            "Full semantic retrieval: BM25 + FAISS vector search + RRF hybrid, "
-            "chunking, embedding pipeline, evaluation metrics, explainability."
+            "Full semantic retrieval: BM25 + FAISS + RRF hybrid + cross-encoder reranking, "
+            "RAG pipeline with citations, grounding verification, conversation memory, "
+            "streaming responses, and confidence scoring."
         ),
-        version="4.0.0",
+        version="6.0.0",
         lifespan=lifespan,
     )
 
@@ -1178,6 +1179,345 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             "reranking_latency":       metrics.reranking_latency.snapshot(),
             "fusion_latency":          metrics.fusion_latency.snapshot(),
             "available_fusions":       available_strategies(),
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 6 — RAG / Knowledge Assistant Platform
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    from app.context_builder.builder import ContextBuilder
+    from app.prompts.templates import get_registry as get_prompt_registry
+    from app.llm.provider import create_llm_provider
+    from app.citations.engine import CitationEngine
+    from app.grounding.verifier import GroundingVerifier
+    from app.confidence.engine import ConfidenceEngine
+    from app.memory.memory import MemoryService
+    from app.rag.pipeline import RAGPipeline, RAGRequest
+    from app.rag_evaluation.evaluator import RAGEvaluator, RAGEvalCase
+    from fastapi.responses import StreamingResponse
+
+    ctx_builder  = ContextBuilder(config.rag.context)
+    prompt_reg   = get_prompt_registry()
+    llm_provider = create_llm_provider(config.rag.llm)
+    cite_engine  = CitationEngine(config.rag.citation)
+    ground_ver   = GroundingVerifier(config.rag.grounding)
+    conf_engine  = ConfidenceEngine()
+    memory_svc   = MemoryService(db, config.rag.memory)
+    rag_eval     = RAGEvaluator()
+
+    rag_pipeline = RAGPipeline(
+        retriever          = hybrid_svc,
+        context_builder    = ctx_builder,
+        prompt_registry    = prompt_reg,
+        llm                = llm_provider,
+        citation_engine    = cite_engine,
+        grounding_verifier = ground_ver,
+        confidence_engine  = conf_engine,
+        memory             = memory_svc,
+        metrics            = metrics,
+        config             = config.rag,
+    )
+
+    # ── Pydantic schemas for Phase 6 ──────────────────────────────────────────
+
+    class ChatRequest(BaseModel):
+        message:    str   = Field(..., min_length=1, max_length=10_000)
+        session_id: str | None = Field(default=None)
+        top_k:      int   = Field(default=5, ge=1, le=20)
+        template:   str   = Field(default="qa")
+        multi_step: bool  = Field(default=False)
+        user_id:    str | None = Field(default=None)
+
+    class RAGQueryRequest(BaseModel):
+        query:      str   = Field(..., min_length=1, max_length=10_000)
+        session_id: str | None = Field(default=None)
+        top_k:      int   = Field(default=5, ge=1, le=20)
+        template:   str   = Field(default="qa")
+        multi_step: bool  = Field(default=False)
+
+    # ── POST /chat ─────────────────────────────────────────────────────────────
+
+    @app.post("/chat", summary="Conversational knowledge assistant", tags=["RAG"],
+              dependencies=[Depends(_rate_limit)])
+    def chat(req: ChatRequest):
+        """
+        Multi-turn conversational RAG endpoint.
+        Creates a session automatically if session_id is not provided.
+        Returns the grounded answer with citations and confidence score.
+        """
+        session = memory_svc.get_or_create(req.session_id, req.user_id or "")
+        rag_req = RAGRequest(
+            query=req.message, session_id=session.session_id,
+            top_k=req.top_k, template=req.template,
+            multi_step=req.multi_step,
+        )
+        resp = rag_pipeline.query(rag_req)
+        metrics.record_chat_session()
+
+        return {
+            "session_id":        session.session_id,
+            "query":             resp.query,
+            "answer":            resp.formatted_answer,
+            "citations":         [
+                {"index": c.index, "title": c.title,
+                 "snippet": c.snippet, "score": c.relevance_score}
+                for c in resp.citations
+            ],
+            "grounding": {
+                "score":            resp.grounding.grounding_score,
+                "support_score":    resp.grounding.support_score,
+                "risk":             resp.grounding.hallucination_risk,
+            },
+            "confidence": {
+                "overall":    resp.confidence.overall_confidence,
+                "tier":       resp.confidence.tier,
+                "retrieval":  resp.confidence.retrieval_confidence,
+                "grounding":  resp.confidence.grounding_confidence,
+            },
+            "context":     resp.context_metadata,
+            "latency_ms":  resp.total_latency_ms,
+            "tokens_used": resp.tokens_used,
+            "subqueries":  resp.subqueries,
+        }
+
+    # ── POST /chat/stream ──────────────────────────────────────────────────────
+
+    @app.post("/chat/stream",
+              summary="Streaming conversational assistant (SSE)",
+              tags=["RAG"], dependencies=[Depends(_rate_limit)])
+    def chat_stream(req: ChatRequest):
+        """
+        Server-Sent Events streaming endpoint.
+        Each event is a JSON object:
+          {"type":"token","content":"..."}
+          {"type":"done","grounding_score":0.7,"confidence":"high","citations":[...]}
+        """
+        metrics.record_streaming()
+        session = memory_svc.get_or_create(req.session_id, req.user_id or "")
+        rag_req = RAGRequest(
+            query=req.message, session_id=session.session_id,
+            top_k=req.top_k, template=req.template, stream=True,
+        )
+
+        def _generate():
+            yield f"data: {__import__('json').dumps({'type':'session','session_id':session.session_id})}\n\n"
+            for chunk in rag_pipeline.stream(rag_req):
+                yield chunk
+
+        return StreamingResponse(_generate(), media_type="text/event-stream")
+
+    # ── POST /rag/query ────────────────────────────────────────────────────────
+
+    @app.post("/rag/query",
+              summary="Single-turn RAG query with full diagnostics",
+              tags=["RAG"], dependencies=[Depends(_rate_limit)])
+    def rag_query(req: RAGQueryRequest):
+        """
+        Full RAG pipeline with detailed per-stage diagnostics.
+        Returns answer, citations, grounding report, and stage latencies.
+        """
+        rag_req = RAGRequest(
+            query=req.query, session_id=req.session_id,
+            top_k=req.top_k, template=req.template,
+            multi_step=req.multi_step,
+        )
+        resp = rag_pipeline.query(rag_req)
+        return {
+            "query":              resp.query,
+            "answer":             resp.answer,
+            "formatted_answer":   resp.formatted_answer,
+            "citations":          [
+                {"index": c.index, "doc_id": c.doc_id, "title": c.title,
+                 "snippet": c.snippet, "url": c.url,
+                 "relevance_score": c.relevance_score}
+                for c in resp.citations
+            ],
+            "grounding": {
+                "score":             resp.grounding.grounding_score,
+                "support_score":     resp.grounding.support_score,
+                "risk":              resp.grounding.hallucination_risk,
+                "supported_claims":  resp.grounding.supported_claims[:5],
+                "unsupported_claims": resp.grounding.unsupported_claims[:5],
+            },
+            "confidence": {
+                "overall":    resp.confidence.overall_confidence,
+                "tier":       resp.confidence.tier,
+                "retrieval":  resp.confidence.retrieval_confidence,
+                "context":    resp.confidence.context_confidence,
+                "grounding":  resp.confidence.grounding_confidence,
+                "citation":   resp.confidence.citation_confidence,
+            },
+            "context_metadata": resp.context_metadata,
+            "retrieval_count":  resp.retrieval_count,
+            "stage_latencies":  resp.stage_latencies,
+            "total_latency_ms": resp.total_latency_ms,
+            "tokens_used":      resp.tokens_used,
+            "subqueries":       resp.subqueries,
+        }
+
+    # ── POST /research/query ───────────────────────────────────────────────────
+
+    @app.post("/research/query",
+              summary="Deep research assistant (multi-step)",
+              tags=["RAG"], dependencies=[Depends(_rate_limit)])
+    def research_query(req: RAGQueryRequest):
+        """
+        Research mode: decomposes complex queries into sub-queries,
+        retrieves independently, synthesizes a comprehensive answer.
+        """
+        rag_req = RAGRequest(
+            query=req.query, session_id=req.session_id,
+            top_k=req.top_k, template="research", multi_step=True,
+        )
+        resp = rag_pipeline.query(rag_req)
+        return {
+            "query":            resp.query,
+            "subqueries":       resp.subqueries,
+            "answer":           resp.formatted_answer,
+            "citations":        [
+                {"index": c.index, "title": c.title, "snippet": c.snippet}
+                for c in resp.citations
+            ],
+            "grounding_score":  resp.grounding.grounding_score,
+            "confidence_tier":  resp.confidence.tier,
+            "sources_used":     resp.context_metadata.get("sources", []),
+            "total_latency_ms": resp.total_latency_ms,
+        }
+
+    # ── GET /memory ────────────────────────────────────────────────────────────
+
+    @app.get("/memory", summary="Get conversation history for a session", tags=["Memory"])
+    def get_memory(session_id: str = Query(...)):
+        session = memory_svc.get_session(session_id)
+        if not session:
+            raise HTTPException(404, detail=f"Session {session_id!r} not found")
+        return {
+            "session_id":    session.session_id,
+            "message_count": session.message_count,
+            "created_at":    session.created_at,
+            "updated_at":    session.updated_at,
+            "messages":      [
+                {"role": m.role, "content": m.content[:500],
+                 "timestamp": m.timestamp}
+                for m in session.messages
+            ],
+        }
+
+    @app.delete("/memory", summary="Delete a conversation session", tags=["Memory"])
+    def delete_memory(session_id: str = Query(...)):
+        ok = memory_svc.delete_session(session_id)
+        if not ok:
+            raise HTTPException(404, detail=f"Session {session_id!r} not found")
+        return {"status": "deleted", "session_id": session_id}
+
+    @app.get("/memory/sessions", summary="List all conversation sessions", tags=["Memory"])
+    def list_sessions(limit: int = Query(default=20, ge=1, le=100)):
+        return {"sessions": memory_svc.get_all_sessions(limit)}
+
+    # ── GET /citations ─────────────────────────────────────────────────────────
+
+    @app.get("/citations", summary="Get citations for a session", tags=["RAG"])
+    def get_citations(session_id: str = Query(...)):
+        rows = db.get_citations_for_session(session_id)
+        return {"session_id": session_id, "citations": rows}
+
+    # ── GET /grounding ─────────────────────────────────────────────────────────
+
+    @app.get("/grounding", summary="Grounding statistics", tags=["RAG"])
+    def grounding_stats():
+        return db.get_grounding_stats()
+
+    @app.post("/grounding/verify", summary="Verify answer grounding against context", tags=["RAG"])
+    def verify_grounding(
+        answer:  str = Query(..., description="The answer text to verify"),
+        context: str = Query(..., description="The context to verify against"),
+    ):
+        from app.context_builder.builder import Context, ContextChunk, ContextMetadata
+        # Build a minimal Context from the raw text
+        chunk = ContextChunk(
+            chunk_id="manual_0", doc_id=0, text=context,
+            score=1.0, source_title="Provided Context",
+        )
+        meta = ContextMetadata(1, chunk.token_count, 1, 0.0, 1.0)
+        ctx  = Context(text=context, chunks=[chunk], metadata=meta)
+        report = ground_ver.verify(answer, ctx)
+        return {
+            "grounding_score":    report.grounding_score,
+            "support_score":      report.support_score,
+            "hallucination_risk": report.hallucination_risk,
+            "unsupported_claims": report.unsupported_claims,
+        }
+
+    # ── GET /confidence ────────────────────────────────────────────────────────
+
+    @app.get("/confidence", summary="Confidence statistics", tags=["RAG"])
+    def confidence_stats():
+        return db.get_confidence_stats()
+
+    # ── GET /prompts ───────────────────────────────────────────────────────────
+
+    @app.get("/prompts", summary="List available prompt templates", tags=["RAG"])
+    def list_prompts():
+        return {"templates": prompt_reg.list_templates()}
+
+    @app.get("/prompts/{name}", summary="Get a specific prompt template", tags=["RAG"])
+    def get_prompt(name: str):
+        try:
+            t = prompt_reg.get(name)
+        except KeyError as e:
+            raise HTTPException(404, detail=str(e))
+        return {
+            "name":    t.name,
+            "version": t.version,
+            "system":  t.system[:300] + "…" if len(t.system) > 300 else t.system,
+            "tags":    t.tags,
+        }
+
+    # ── POST /rag/evaluate ────────────────────────────────────────────────────
+
+    @app.post("/rag/evaluate",
+              summary="Evaluate a RAG response",
+              tags=["RAG Evaluation"])
+    def evaluate_rag(
+        query:    str = Query(...),
+        answer:   str = Query(...),
+        context:  str = Query(...),
+        ground_truth: str = Query(default=""),
+    ):
+        from app.context_builder.builder import Context, ContextChunk, ContextMetadata
+        chunk  = ContextChunk("c0", 0, context, 1.0, "Provided")
+        meta   = ContextMetadata(1, chunk.token_count, 1, 0.0, 1.0)
+        ctx    = Context(text=context, chunks=[chunk], metadata=meta)
+        from app.grounding.verifier import GroundingVerifier
+        gr     = GroundingVerifier().verify(answer, ctx)
+        case   = RAGEvalCase(
+            query_id="api", query=query, answer=answer,
+            context=ctx, grounding=gr, ground_truth=ground_truth,
+        )
+        result = rag_eval.evaluate(case)
+        return result.to_dict()
+
+    @app.get("/rag/eval-stats", summary="Aggregate RAG evaluation stats", tags=["RAG Evaluation"])
+    def rag_eval_stats():
+        return db.get_rag_eval_stats()
+
+    # ── RAG observability ─────────────────────────────────────────────────────
+
+    @app.get("/rag/stats", summary="RAG pipeline statistics", tags=["RAG"])
+    def rag_stats():
+        return {
+            "rag_queries_total":       metrics.rag_queries.value,
+            "rag_tokens_total":        metrics.rag_tokens_used.value,
+            "chat_sessions_total":     metrics.chat_sessions.value,
+            "streaming_requests":      metrics.streaming_requests.value,
+            "grounding_checks":        metrics.grounding_checks.value,
+            "high_risk_responses":     metrics.high_risk_responses.value,
+            "citations_generated":     metrics.citations_generated.value,
+            "llm_provider":            llm_provider.model_name,
+            "rag_latency":             metrics.rag_total_latency.snapshot(),
+            "llm_latency":             metrics.rag_llm_latency.snapshot(),
+            "grounding_db_stats":      db.get_grounding_stats(),
+            "confidence_db_stats":     db.get_confidence_stats(),
         }
 
     return app
