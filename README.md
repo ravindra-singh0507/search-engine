@@ -1,551 +1,428 @@
-# Search Engine — Built from Scratch
+# Search Engine & Agentic Research Platform
 
-A production-grade search engine built entirely from scratch in Python — no Elasticsearch, no Solr, no pre-built IR libraries.
+A production-grade **information retrieval and agentic research platform** built entirely from scratch in Python across 7 phases — from a basic tokenizer to a multi-agent autonomous research system.
 
-**252 tests · 4 phases · BM25 + FAISS + Hybrid RRF**
+Every algorithm is implemented from first principles — no Elasticsearch, no LangChain, no vector database services.
+
+**465 tests | 7 phases | 34 tables | 65+ API endpoints | React dashboard**
 
 ---
 
-## What This Project Covers
+## Quick Start
 
-### Phase 1 — Local Document Search
-- **Tokenizer** — Lowercasing, punctuation removal, stop words, position tracking
-- **Inverted Index** — Term → posting list (doc_id, tf, positions, field)
-- **Boolean Retrieval** — AND / OR / NOT with correct AND-before-OR precedence
-- **TF-IDF Ranking** — Normalised TF × log(N/df), cosine similarity
-- **SQLite Storage** — documents, terms, postings tables with WAL mode
-- **REST API** — FastAPI with Pydantic validation, lifespan, OpenAPI docs
+```bash
+# Install dependencies
+pip install fastapi uvicorn requests beautifulsoup4 pytest pytest-asyncio httpx numpy pydantic
+# Optional (real embeddings + reranking):
+pip install sentence-transformers faiss-cpu
 
-### Phase 2 — Web Crawler
-- **BFS Crawling** — Breadth-first traversal with deque frontier and visited set
-- **URL Normalization** — Lowercase, strip fragments, sort query params, remove tracking params
-- **robots.txt** — Per-domain cache, Disallow / Allow / Crawl-delay, section-bleed fix
-- **Content Extraction** — BeautifulSoup title + body text + outgoing links
-- **Incremental Indexing** — Source-path deduplication; re-crawls are no-ops
-- **Crawl Controls** — Depth limit, page limit, stay-on-domain, politeness delay
+# Run the API server
+uvicorn app.api.routes:create_app --factory --host 0.0.0.0 --port 8000 --reload
 
-### Phase 3 — Advanced Search Features
-- **BM25 Ranking** — Saturating TF, Robertson–Spärck Jones IDF, batch N+1 fix, field-aware
-- **Field-Aware Indexing** — Separate `title` / `body` posting rows; title boost in ranking
-- **Advanced Query Parser** — Recursive-descent AST: AND/OR/NOT, parentheses, phrase search (positional), `title:python`, `py*` wildcard, thread-safe `_ParseState`
-- **Trie Autocomplete** — Prefix search, frequency ranking, JSON persistence
-- **BK-Tree Spell Correction** — Levenshtein distance + BK-tree + confidence scores
-- **Query Expansion** — JSON synonym dictionary, OR-joined expansion
-- **Snippet Generation** — Hit-centred windows, overlap merge, `**bold**` highlight, content-length cap
-- **Search Analytics** — `search_logs`, `click_logs`, `query_stats` — CTR, top queries, zero-result tracking
-- **Relevance Tuning** — Weighted BM25 + title_boost + recency decay + click boost
-- **LRU Cache** — Thread-safe `OrderedDict`, TTL, per-session `log_id` (cache-poisoning fix)
-- **Prometheus Metrics** — Counters + histograms, `/metrics` endpoint, slow-query detection
-- **Security** — Path traversal protection, SSRF blocking, optional API key, rate limiting
-- **React Dashboard** — Vite + TypeScript + Recharts: Search, Analytics, Metrics, Crawler pages
+# Run all tests
+python -m pytest tests/ -q        # 465 pass, 1 skip (faiss-cpu optional)
 
-### Phase 4 — Semantic Retrieval Platform
-- **Embedding Infrastructure** — `EmbeddingProvider` Protocol; `LocalEmbeddingProvider` (sentence-transformers, BAAI/bge-small-en-v1.5); `MockEmbeddingProvider` for tests
-- **Document Chunking** — `FixedSizeChunker` and `SlidingWindowChunker` (word-level, configurable size and overlap)
-- **Embedding Pipeline** — Chunk → cache-check → batch embed → FAISS insert → DB record; incremental (only new docs)
-- **FAISS Vector Store** — `IndexFlatIP` + L2-normalised vectors = exact cosine similarity; soft deletion; save/load
-- **Semantic Search** — Embed query → ANN search → dedup to best chunk per doc → ranked results
-- **Hybrid Retrieval** — BM25 + semantic, fused with **Reciprocal Rank Fusion** (RRF, k=60)
-- **Retrieval Explainability** — Full score breakdown: BM25 score/rank, cosine score/rank, RRF score, reason string
-- **Embedding Cache** — SHA-256 content-addressed, SQLite-persisted, cross-restart
-- **Incremental Vector Updates** — Add / remove from FAISS on document lifecycle events
-- **Evaluation Framework** — P@K, R@K, MRR, MAP, NDCG@K; `RetrievalEvaluator`; ASCII comparison table
-- **Extended Observability** — Embedding latency, semantic latency, hybrid latency, embedding cache hit rate
-- **Frontend (Phase 4)** — Semantic Search page + Hybrid Search page with mode toggle (Hybrid/BM25/Semantic)
+# Start the frontend
+cd frontend && npm install && npm run dev
+```
+
+### Index a document, search, chat, and research
+
+```bash
+# Index
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Python Guide", "content": "Python is a high-level programming language..."}'
+
+# BM25 search
+curl "http://localhost:8000/search?q=python"
+
+# Hybrid search (BM25 + semantic + RRF)
+curl "http://localhost:8000/hybrid-search?q=python+web+framework"
+
+# RAG chat (Phase 6)
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is Python?"}'
+
+# Agentic research (Phase 7)
+curl -X POST http://localhost:8000/research \
+  -H "Content-Type: application/json" \
+  -d '{"goal": "Compare FastAPI vs Flask", "workflow": "comparison", "params": {"entities": ["FastAPI", "Flask"]}}'
+```
+
+---
+
+## Architecture
+
+```
++-----------------------------------------------------------------+
+|                   Phase 7 -- Agentic Research                    |
+|  PlannerAgent . RetrievalAgent . CriticAgent . SynthesisAgent   |
+|  WorkflowEngine (DAG) . EvidenceStore . ToolFramework           |
+|  MCPRegistry . ResearchMemory . ReportGenerator                 |
++-----------------------------------------------------------------+
+|                      Phase 6 -- RAG Layer                        |
+|  ContextBuilder -> PromptRegistry -> LLMProvider -> Citations    |
+|  GroundingVerifier -> ConfidenceEngine -> MemoryService          |
+|  RAGPipeline -> RAGEvaluator -> StreamingResponses              |
++-----------------------------------------------------------------+
+|                Phase 5 -- Advanced Retrieval                     |
+|  RetrievalPipeline (4-stage) . CrossEncoderReranker             |
+|  FusionStrategies . QueryClassifier . ExperimentRunner          |
++-----------------------------------------------------------------+
+|                Phase 4 -- Semantic Retrieval                     |
+|  EmbeddingPipeline . FaissVectorStore . SemanticSearch          |
+|  HybridSearch (BM25 + FAISS + RRF) . RetrievalEvaluator        |
++-----------------------------------------------------------------+
+|                Phase 3 -- Search Quality                         |
+|  BM25Ranker . AdvancedQueryParser (AST) . SpellChecker (BK-Tree)|
+|  Trie Autocomplete . QueryExpander . RelevanceTuner             |
+|  SnippetGenerator . LRU Cache . MetricsCollector (Prometheus)   |
++-----------------------------------------------------------------+
+|                Phase 2 -- Web Crawling                           |
+|  WebCrawler (BFS) . RobotsParser . URL Normalizer               |
++-----------------------------------------------------------------+
+|                Phase 1 -- Search Fundamentals                    |
+|  Tokenizer . Inverted Index . TF-IDF . BooleanRetriever         |
+|  SQLite Storage . FastAPI                                       |
++-----------------------------------------------------------------+
+```
+
+---
+
+## Phases
+
+### Phase 1 -- Search Fundamentals
+- **Tokenizer** -- Lowercasing, punctuation removal, stop words, position tracking
+- **Inverted Index** -- Term -> posting list (doc_id, tf, positions, field)
+- **Boolean Retrieval** -- AND / OR / NOT with correct AND-before-OR precedence
+- **TF-IDF Ranking** -- Normalised TF x log(N/df), cosine similarity
+- **SQLite Storage** -- documents, terms, postings tables with WAL mode
+- **REST API** -- FastAPI with Pydantic validation, lifespan, OpenAPI docs
+
+### Phase 2 -- Web Crawling
+- **BFS Crawling** -- Breadth-first traversal with deque frontier and visited set
+- **URL Normalization** -- Lowercase, strip fragments, sort query params, remove tracking params
+- **robots.txt** -- Per-domain cache, Disallow / Allow / Crawl-delay
+- **Content Extraction** -- BeautifulSoup title + body text + outgoing links
+- **Incremental Indexing** -- Source-path deduplication; re-crawls are no-ops
+- **SSRF Protection** -- Blocks private/loopback IP ranges
+
+### Phase 3 -- Search Quality
+- **BM25 Ranking** -- Saturating TF, Robertson-Spark Jones IDF, batch N+1 fix, field-aware
+- **Advanced Query Parser** -- Recursive-descent AST: AND/OR/NOT, parentheses, phrase search (positional), `title:python`, `py*` wildcard
+- **Trie Autocomplete** -- Prefix search, frequency ranking, JSON persistence
+- **BK-Tree Spell Correction** -- Levenshtein distance + triangle-inequality pruning
+- **Query Expansion** -- JSON synonym dictionary, OR-joined expansion
+- **Snippet Generation** -- Hit-centred windows, overlap merge, bold highlight
+- **Search Analytics** -- search_logs, click_logs, query_stats, CTR tracking
+- **Relevance Tuning** -- Weighted BM25 + title_boost + recency decay + click boost
+- **LRU Cache** -- Thread-safe, TTL, session-aware
+- **Prometheus Metrics** -- Counters + histograms, `/metrics` endpoint
+- **Security** -- Path traversal protection, SSRF blocking, API key auth, rate limiting
+- **React Dashboard** -- Search, Analytics, Metrics, Crawler pages
+
+### Phase 4 -- Semantic Retrieval
+- **Embedding Infrastructure** -- EmbeddingProvider protocol, BGE-small-en-v1.5, mock for tests
+- **Document Chunking** -- FixedSize and SlidingWindow chunkers (word-level, configurable)
+- **FAISS Vector Store** -- IndexFlatIP + L2-normalised = exact cosine, soft deletion, save/load
+- **Hybrid Retrieval** -- BM25 + semantic, fused with Reciprocal Rank Fusion (RRF, k=60)
+- **Fusion Strategies** -- RRF, CombSUM, CombMNZ, Weighted, Borda Count
+- **Embedding Cache** -- SHA-256 content-addressed, SQLite-persisted
+- **Retrieval Evaluation** -- P@K, R@K, MRR, MAP, NDCG@K; system comparison table
+
+### Phase 5 -- Advanced Retrieval
+- **Cross-Encoder Reranking** -- ms-marco-MiniLM-L-6-v2 with sigmoid normalisation
+- **4-Stage Pipeline** -- BM25+Semantic -> Fusion -> Rerank -> Final (concurrent)
+- **Query Understanding** -- Rule-based intent classification (6 intents)
+- **Learning-to-Rank** -- 8-feature extraction (BM25, semantic, title match, recency, etc.)
+- **Experiment Framework** -- A/B retrieval experiments with metric comparison
+- **Personalization** -- User profile infrastructure with click/search history
+
+### Phase 6 -- RAG Platform
+- **LLM Abstraction** -- Mock (tests), Ollama (local), OpenAI, Anthropic, Gemini
+- **Context Builder** -- MMR diversification, token budgeting, Jaccard deduplication
+- **Prompt Templates** -- 6 versioned templates (qa, research, summarization, documentation, comparison, troubleshooting)
+- **Citation Engine** -- Sentence-level [N] attribution with source snippets
+- **Grounding Verification** -- Bigram Jaccard at sentence level, risk tiers (low/medium/high)
+- **Confidence Scoring** -- 4-component weighted score: retrieval(0.25) x context(0.15) x grounding(0.40) x citation(0.20)
+- **Conversation Memory** -- SQLite-persisted sessions, auto-summarization at N=30
+- **SSE Streaming** -- Token-by-token with post-stream citation/grounding metadata
+- **Prompt Injection Detection** -- Regex patterns with [REDACTED] substitution
+- **RAG Evaluation** -- 7 metrics: faithfulness, groundedness, answer relevance, context precision/recall, citation accuracy, response completeness
+- **Knowledge Assistant UI** -- Chat interface with citations panel, grounding/confidence badges
+
+### Phase 7 -- Agentic Research Platform
+- **Agent Framework** -- Agent base class with lifecycle state machine, retry with exponential backoff, timeout enforcement, per-agent memory
+- **5 Specialist Agents** -- PlannerAgent (goal decomposition), RetrievalAgent (evidence gathering), CriticAgent (evidence quality review), CitationValidationAgent (source verification), SynthesisAgent (report generation)
+- **Workflow Orchestration** -- DAG-based execution with Kahn's topological sort, sequential and parallel modes, dependency failure propagation
+- **Evidence Engine** -- EvidenceStore (CRUD + filtering), EvidenceGraph (supports/contradicts/extends relations), EvidenceExtractor, EvidenceValidator (quality gate with deduplication)
+- **Research Memory** -- TaskMemory (agent execution history), EvidenceMemory (deduplicated, score-pruned), ResearchSessionMemory (event log + summarization)
+- **Tool Framework** -- Abstract Tool interface, ToolRegistry, ToolExecutor; 5 built-in tools (search, retrieval, database, memory, evaluation)
+- **MCP Architecture** -- MCP-compatible tool definitions with JSON Schema, list_tools/call_tool interface matching the MCP specification
+- **Workflow Templates** -- 6 templates: comparison, investigation, documentation, summarization, tech_evaluation, root_cause
+- **Report Generation** -- Markdown, HTML (inline CSS), and structured JSON output
+- **Research Evaluation** -- 7 metrics: task completion, research completeness, citation accuracy, evidence coverage, grounding quality, hallucination rate, report quality
+- **Agent Dashboard** -- Research execution UI with workflow selector, step-by-step visualization, metrics panel, tools explorer
+- **Database** -- 8 new tables: agent_tasks, agent_runs, workflow_runs, evidence_records, research_sessions, citation_validation_reports, research_reports, agent_metrics
+- **Observability** -- Per-agent-type latency histograms, success/failure counters, workflow latency tracking
 
 ---
 
 ## Project Structure
 
 ```
-search-engine-project/
-├── app/
-│   ├── api/
-│   │   └── routes.py                  # All FastAPI endpoints (Phases 1–4)
-│   ├── analytics/
-│   │   └── analytics.py               # Search event logging + CTR
-│   ├── autocomplete/
-│   │   └── trie.py                    # Trie + AutocompleteService
-│   ├── benchmarks/
-│   │   └── benchmarker.py             # Latency + throughput benchmarks
-│   ├── bm25/
-│   │   └── bm25.py                    # BM25 ranker (batch posting fetch)
-│   ├── cache/
-│   │   └── lru_cache.py               # LRU cache + QueryCache
-│   ├── chunking/
-│   │   └── chunker.py                 # FixedSize + SlidingWindow chunkers
-│   ├── crawler/
-│   │   ├── crawler.py                 # BFS web crawler
-│   │   ├── robots.py                  # robots.txt parser
-│   │   └── url_normalize.py           # URL canonicalization
-│   ├── database/
-│   │   └── db.py                      # SQLite layer (10 tables, Phase 1–4)
-│   ├── embeddings/
-│   │   ├── cache.py                   # SHA-256 embedding cache
-│   │   ├── pipeline.py                # Chunk → embed → store pipeline
-│   │   └── provider.py                # EmbeddingProvider protocol + Local/Mock
-│   ├── evaluation/
-│   │   ├── evaluator.py               # RetrievalEvaluator
-│   │   └── metrics.py                 # P@K, R@K, MRR, MAP, NDCG@K
-│   ├── hybrid_search/
-│   │   └── hybrid_service.py          # RRF + linear fusion
-│   ├── indexer/
-│   │   └── indexer.py                 # Field-aware inverted index builder
-│   ├── observability/
-│   │   └── metrics.py                 # Prometheus-style counters + histograms
-│   ├── parser/
-│   │   ├── advanced_query_parser.py   # AST parser (phrase, field, wildcard)
-│   │   └── query_parser.py            # Simple Boolean parser
-│   ├── query_expansion/
-│   │   ├── expander.py                # Synonym expander
-│   │   └── synonyms.json              # Synonym dictionary
-│   ├── ranking/
-│   │   ├── relevance_tuning.py        # Multi-signal ranker
-│   │   └── tfidf.py                   # TF-IDF (kept for comparison)
-│   ├── search/
-│   │   └── search_service.py          # Full pipeline orchestrator
-│   ├── semantic_search/
-│   │   └── semantic_service.py        # Dense vector retrieval
-│   ├── snippets/
-│   │   └── snippet_generator.py       # Hit-centred snippet + highlight
-│   ├── spellcheck/
-│   │   ├── bk_tree.py                 # BK-tree
-│   │   ├── levenshtein.py             # Edit distance (rolling DP)
-│   │   └── spell_checker.py           # SpellChecker service
-│   ├── tokenizer/
-│   │   └── tokenizer.py               # Text tokenizer
-│   ├── vector_store/
-│   │   └── store.py                   # VectorStore protocol + FaissVectorStore
-│   └── config.py                      # All configuration dataclasses
-├── data/
-│   ├── search_engine.db               # SQLite database
-│   ├── eval_dataset.json              # Sample evaluation dataset
-│   ├── faiss_index/                   # FAISS index files (auto-created)
-│   └── trie.json                      # Autocomplete trie (auto-created)
-├── documents/                         # Sample .txt files for local indexing
-├── frontend/
-│   ├── src/
-│   │   ├── api/client.ts              # Typed API client
-│   │   ├── pages/
-│   │   │   ├── SearchPage.tsx         # BM25 search + autocomplete
-│   │   │   ├── SemanticSearchPage.tsx # Dense vector search
-│   │   │   ├── HybridSearchPage.tsx   # Hybrid + mode toggle
-│   │   │   ├── AnalyticsPage.tsx      # Search analytics dashboard
-│   │   │   ├── MetricsPage.tsx        # Performance metrics + charts
-│   │   │   └── CrawlerPage.tsx        # Crawler control
-│   │   ├── App.tsx
-│   │   ├── index.css
-│   │   └── main.tsx
-│   ├── package.json
-│   └── vite.config.ts
-├── tests/
-│   ├── conftest.py                    # Shared pytest fixtures
-│   ├── test_tokenizer.py
-│   ├── test_indexer.py
-│   ├── test_query_parser.py
-│   ├── test_ranking.py
-│   ├── test_search.py
-│   ├── test_api.py
-│   ├── test_crawler.py
-│   ├── test_url_normalize.py
-│   ├── test_phase3.py                 # Phase 3 component tests
-│   └── test_phase4.py                 # Phase 4 component tests
-├── main.py                            # Application entry point
-└── requirements.txt
+app/
+  agents/                     Phase 7: Agent framework + 5 agents
+    base.py                     Agent, AgentTask, AgentResult, AgentContext, Lifecycle
+    planner.py                  PlannerAgent -- goal decomposition
+    retrieval.py                RetrievalAgent -- evidence gathering
+    critic.py                   CriticAgent -- evidence quality review
+    citation_validator.py       CitationValidationAgent
+    synthesis.py                SynthesisAgent -- report generation
+  orchestration/              Phase 7: Workflow engine
+    engine.py                   ExecutionGraph (DAG), WorkflowEngine, TaskScheduler
+  evidence/                   Phase 7: Evidence tracking
+    engine.py                   EvidenceStore, EvidenceGraph, Extractor, Validator
+  research_memory/            Phase 7: Research session memory
+    memory.py                   TaskMemory, EvidenceMemory, SessionMemory
+  tools/                      Phase 7: Tool framework
+    framework.py                Tool, ToolRegistry, ToolExecutor, 5 built-in tools
+  mcp/                        Phase 7: MCP-compatible architecture
+    registry.py                 MCPRegistry, MCPToolDefinition
+  workflows/                  Phase 7: Workflow templates
+    templates.py                6 templates + registry
+  reports/                    Phase 7: Report generation
+    generator.py                Markdown, HTML, JSON formats
+  research_evaluation/        Phase 7: Research quality metrics
+    evaluator.py                7-metric evaluation framework
+  rag/pipeline.py             Phase 6: RAG orchestration pipeline
+  context_builder/builder.py  Phase 6: Context construction with MMR
+  prompts/templates.py        Phase 6: 6 prompt templates
+  llm/provider.py             Phase 6: LLM abstraction (5 providers)
+  citations/engine.py         Phase 6: Sentence-level citation engine
+  grounding/verifier.py       Phase 6: Grounding verification
+  confidence/engine.py        Phase 6: 4-component confidence scoring
+  memory/memory.py            Phase 6: Conversation memory
+  rag_evaluation/evaluator.py Phase 6: RAG evaluation (7 metrics)
+  retrieval_pipeline/         Phase 5: Multi-stage pipeline
+  reranking/                  Phase 5: Cross-encoder reranker
+  query_understanding/        Phase 5: Query intent classifier
+  fusion/                     Phase 4-5: Fusion strategies
+  hybrid_search/              Phase 4: BM25 + semantic fusion
+  semantic_search/            Phase 4: Vector similarity search
+  vector_store/               Phase 4: FAISS index
+  embeddings/                 Phase 4: Sentence-transformer embeddings
+  bm25/                       Phase 3: BM25 ranking
+  parser/                     Phase 3: AST query parser
+  spellcheck/                 Phase 3: BK-tree spell correction
+  autocomplete/               Phase 3: Trie autocomplete
+  analytics/                  Phase 3: Search analytics
+  observability/metrics.py    Phase 3-7: Prometheus metrics
+  database/db.py              Phase 1-7: SQLite (34 tables)
+  api/routes.py               Phase 1-7: FastAPI (65+ endpoints)
+  config.py                   All configuration dataclasses
+  tokenizer/                  Phase 1: Tokenization
+  indexer/                    Phase 1: Inverted index
+  ranking/                    Phase 1: TF-IDF
+  search/                     Phase 1: Search service
+  crawler/                    Phase 2: Web crawler
+
+frontend/src/pages/
+  SearchPage.tsx              BM25 search + autocomplete
+  SemanticSearchPage.tsx      Dense vector search
+  HybridSearchPage.tsx        Hybrid search + mode toggle
+  AnalyticsPage.tsx           Search analytics dashboard
+  MetricsPage.tsx             Performance metrics + charts
+  CrawlerPage.tsx             Crawler control
+  KnowledgeAssistantPage.tsx  Phase 6: Chat UI
+  AgentDashboardPage.tsx      Phase 7: Research dashboard
+
+tests/
+  test_phase7.py              89 tests -- agents, orchestration, evidence, tools, API
+  test_phase6.py              122 tests -- RAG, LLM, citations, grounding, streaming
+  test_phase5.py              92 tests -- reranking, pipeline, query understanding
+  test_phase4.py              46 tests -- embeddings, vector store, hybrid search
+  test_phase3.py              44 tests -- BM25, parser, spell check, autocomplete
+  + others                    72 tests -- tokenizer, indexer, crawler, URL normalization
 ```
 
 ---
 
-## Database Schema
+## Database Schema (34 tables)
 
-```
-documents         doc_id, title, content, source, doc_type, word_count, created_at
-terms             term_id, term, document_frequency
-postings          term_id, doc_id, term_frequency, positions, field (title|body)
-crawled_pages     page_id, url, title, content, html, status_code, depth, doc_id
-search_logs       log_id, query, results_count, latency_ms, timestamp, session_id
-click_logs        click_id, log_id, doc_id, position, timestamp
-query_stats       query_id, query, total_searches, avg_latency_ms, zero_result_searches
-document_chunks   chunk_id, doc_id, chunk_index, text, start_offset, end_offset, word_count
-document_embeddings embedding_id, chunk_id, doc_id, model_name, vector_dim
-embedding_jobs    job_id, doc_id, status, model_name, chunks_total, chunks_processed, error
-vector_index_metadata  model_name, dimension, total_vectors, index_path, updated_at
-embedding_cache   content_hash, model_name, vector_json, created_at
-```
-
----
-
-## Setup
-
-### 1. Create a virtual environment
-
-```bash
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# macOS/Linux
-source venv/bin/activate
-```
-
-### 2. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-**Phase 4 dependencies** (sentence-transformers + FAISS) are included in `requirements.txt`.  
-`sentence-transformers` requires PyTorch (~200 MB download on first install).  
-If you only want Phases 1–3, the engine works without them — it automatically falls back to a `MockEmbeddingProvider`.
-
-### 3. Start the backend
-
-```bash
-python main.py
-```
-
-The API runs at `http://localhost:8000`.  
-Interactive docs at `http://localhost:8000/docs`.
-
-**Environment variables:**
-
-| Variable | Default | Description |
-|---|---|---|
-| `ENV` | `development` | Set to `production` to disable uvicorn reload |
-| `SEARCH_API_KEY` | *(unset)* | If set, mutating endpoints require `X-API-Key` header |
-
-### 4. Start the frontend (optional)
-
-```bash
-cd frontend
-npm install
-npm run dev        # → http://localhost:3000
-```
-
-The Vite dev server proxies `/api/*` to `http://localhost:8000`.
-
----
-
-## Usage
-
-### Index documents
-
-```bash
-# Index all .txt files in documents/
-curl -X POST http://localhost:8000/index/directory \
-  -H "Content-Type: application/json" \
-  -d '{"directory": "documents"}'
-
-# Index a single document
-curl -X POST http://localhost:8000/index \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Flask Guide", "content": "Flask is a lightweight Python web framework."}'
-```
-
-### Build the semantic index (Phase 4)
-
-```bash
-# Chunk + embed all documents and store in FAISS (synchronous)
-curl -X POST http://localhost:8000/embeddings/reindex \
-  -H "Content-Type: application/json" \
-  -d '{"sync": true}'
-
-# Check embedding status
-curl http://localhost:8000/embeddings/stats
-```
-
-### Search
-
-```bash
-# BM25 keyword search
-curl "http://localhost:8000/search?q=python"
-
-# Boolean operators
-curl "http://localhost:8000/search?q=python+AND+web"
-curl "http://localhost:8000/search?q=python+OR+java"
-curl "http://localhost:8000/search?q=python+NOT+java"
-
-# Field search
-curl "http://localhost:8000/search?q=title:python"
-
-# Phrase search (positional)
-curl "http://localhost:8000/search?q=%22machine+learning%22"
-
-# Wildcard / prefix
-curl "http://localhost:8000/search?q=py*"
-
-# Semantic search (dense vector)
-curl "http://localhost:8000/semantic-search?q=fast+data+retrieval"
-
-# Hybrid search (BM25 + semantic + RRF)
-curl "http://localhost:8000/hybrid-search?q=neural+ranking+models"
-```
-
-### Explain scores
-
-```bash
-# BM25 term-by-term breakdown
-curl "http://localhost:8000/explain?q=python&doc_id=1"
-
-# Full hybrid score breakdown
-curl "http://localhost:8000/hybrid-search/explain?q=python&doc_id=1"
-```
-
-### Autocomplete and spell check
-
-```bash
-curl "http://localhost:8000/autocomplete?q=py"
-curl "http://localhost:8000/spellcheck?q=pythn"
-curl "http://localhost:8000/spellcheck/query?q=machne+lerning"
-```
-
-### Analytics
-
-```bash
-curl http://localhost:8000/analytics/dashboard
-curl http://localhost:8000/analytics/top-queries
-curl http://localhost:8000/analytics/failures
-curl "http://localhost:8000/analytics/search-volume?hours=24"
-```
-
-### Evaluation
-
-```bash
-# Run BM25 vs semantic vs hybrid on data/eval_dataset.json
-curl "http://localhost:8000/evaluation?systems=bm25,semantic,hybrid"
-```
-
-### Crawl websites
-
-```bash
-curl -X POST http://localhost:8000/crawl \
-  -H "Content-Type: application/json" \
-  -d '{
-    "seed_urls": ["https://docs.python.org/3/tutorial/index.html"],
-    "max_depth": 2,
-    "max_pages": 20,
-    "stay_on_domain": true
-  }'
-
-curl http://localhost:8000/crawl/status
-```
-
-### Metrics
-
-```bash
-# Prometheus exposition format
-curl http://localhost:8000/metrics
-
-# JSON snapshot
-curl http://localhost:8000/metrics/snapshot
-```
+| Phase | Tables |
+|---|---|
+| 1-2 | documents, terms, postings, crawled_pages |
+| 3 | search_logs, click_logs, query_stats |
+| 4 | document_chunks, document_embeddings, embedding_jobs, vector_index_metadata, embedding_cache |
+| 5 | reranking_logs, retrieval_experiments, experiment_results, ranking_features, query_intents, evaluation_reports, personalization_profiles |
+| 6 | conversation_sessions, conversation_messages, citations, grounding_reports, rag_evaluations, answer_confidence, memory_snapshots |
+| 7 | agent_tasks, agent_runs, workflow_runs, evidence_records, research_sessions, citation_validation_reports, research_reports, agent_metrics |
 
 ---
 
 ## API Reference
 
-### Indexing
+### Phase 1-3: Indexing and Search
 
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/index` | Index a single document |
-| POST | `/index/directory` | Index all `.txt` files in a directory |
-
-### Search
-
-| Method | Endpoint | Description |
-|---|---|---|
+| POST | `/index/directory` | Index all .txt files in a directory |
 | GET | `/search?q=...` | BM25 + relevance-tuned keyword search |
-| GET | `/semantic-search?q=...` | Dense vector search via FAISS |
-| GET | `/hybrid-search?q=...` | BM25 + semantic fused with RRF |
 | GET | `/explain?q=...&doc_id=...` | BM25 per-term score breakdown |
-| GET | `/semantic-search/explain?q=...&doc_id=...` | Per-chunk cosine scores |
-| GET | `/hybrid-search/explain?q=...&doc_id=...` | Full hybrid score explanation |
-| POST | `/search/click` | Record a result click (analytics) |
-
-### Documents
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/document/{id}` | Get document by ID |
-| DELETE | `/document/{id}` | Delete document, index, and embeddings |
-
-### Autocomplete & Spell Check
-
-| Method | Endpoint | Description |
-|---|---|---|
 | GET | `/autocomplete?q=...` | Trie prefix suggestions |
 | GET | `/spellcheck?q=...` | Per-word correction suggestions |
-| GET | `/spellcheck/query?q=...` | Auto-correct a full query |
+| GET | `/analytics/dashboard` | All analytics in one response |
+| GET | `/metrics` | Prometheus exposition format |
 
-### Embeddings (Phase 4)
+### Phase 4: Semantic and Hybrid Search
 
 | Method | Endpoint | Description |
 |---|---|---|
+| GET | `/semantic-search?q=...` | Dense vector search via FAISS |
+| GET | `/hybrid-search?q=...` | BM25 + semantic fused with RRF |
 | POST | `/embeddings/reindex` | Chunk + embed documents into FAISS |
-| GET | `/embeddings/stats` | FAISS stats, cache, job queue |
-| DELETE | `/embeddings/cache` | Clear embedding cache |
-| GET | `/vector-store/stats` | FAISS index statistics |
+| GET | `/evaluation` | P@K, NDCG, MRR across retrieval systems |
 
-### Evaluation (Phase 4)
+### Phase 5: Advanced Retrieval
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/evaluation` | P@K, R@K, MRR, MAP, NDCG@K across systems |
-| GET | `/evaluation/detail` | Per-query evaluation breakdown |
+| GET | `/pipeline-search?q=...` | 4-stage retrieval pipeline |
+| GET | `/query/classify?q=...` | Query intent classification |
+| POST | `/experiments` | Run retrieval experiments |
 
-### Analytics
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/analytics/dashboard` | All metrics in one response |
-| GET | `/analytics/top-queries` | Most frequently searched queries |
-| GET | `/analytics/search-volume` | Hourly search counts |
-| GET | `/analytics/failures` | Zero-result queries |
-| GET | `/analytics/click-through-rate` | CTR statistics |
-
-### Observability
+### Phase 6: RAG and Chat
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/metrics` | Prometheus text format |
-| GET | `/metrics/snapshot` | JSON metrics snapshot |
-| GET | `/stats` | Index statistics |
+| POST | `/chat` | RAG chat (retrieve -> generate -> cite -> ground) |
+| POST | `/chat/stream` | SSE streaming chat |
+| GET | `/prompts` | List prompt templates |
+| POST | `/rag/evaluate` | Evaluate a RAG response |
+| GET | `/rag/stats` | RAG pipeline statistics |
 
-### Crawler
+### Phase 7: Agentic Research
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/crawl` | Start a BFS web crawl |
-| GET | `/crawl/status` | Current crawl status |
-| GET | `/crawl/stats` | Pages crawled / indexed |
+| POST | `/research` | Run a full agentic research workflow |
+| POST | `/research/plan` | Generate a research plan without executing |
+| POST | `/research/retrieve` | Run a single retrieval agent |
+| GET | `/research/workflows` | List available workflow templates |
+| GET | `/research/agents` | List available agent types |
+| GET | `/research/sessions` | List research sessions |
+| GET | `/research/sessions/{id}` | Get session details |
+| GET | `/research/reports` | List research reports |
+| POST | `/research/reports/generate` | Generate report from synthesis output |
+| GET | `/research/workflow-runs` | Workflow run history |
+| GET | `/research/evidence/{id}` | Evidence for a session |
+| GET | `/research/metrics` | Agent and workflow metrics |
+| GET | `/tools` | List available tools |
+| POST | `/tools/execute` | Execute a tool by name |
+| GET | `/mcp/tools` | List MCP-compatible tools |
+| POST | `/mcp/tools/call` | Call an MCP tool |
 
 ---
 
-## Running Tests
+## Configuration
 
-```bash
-pytest tests/ -v
-```
+All configuration is via Python dataclasses in `app/config.py`:
 
-**252 tests** covering every component across all four phases.
-
-```bash
-# Run just Phase 4 tests
-pytest tests/test_phase4.py -v
-
-# Run Phase 3 regression tests
-pytest tests/test_phase3.py -v
-
-# Run with coverage
-pytest tests/ --cov=app --cov-report=term-missing
-```
-
----
-
-## Key Concepts Implemented
-
-### Inverted Index
-Maps each term to a posting list: `{doc_id, tf, positions[], field}`. Enables O(1) term lookup vs O(N) document scan. Phase 3 adds a `field` column (`title` / `body`) so the ranker can boost title matches independently.
-
-### TF-IDF
-`tf(t,d) = count/total · idf(t) = log(N/df)`. Cosine similarity normalises for document length. Kept for benchmarking; superseded by BM25 as the default ranker.
-
-### BM25
-Improves TF-IDF with: (1) saturating TF — `tf*(t,d) = f(k₁+1)/(f+k₁(1-b+b|d|/avgdl))` — so high-frequency terms don't dominate; (2) Robertson–Spärck Jones IDF that is always ≥ 0. Batch posting fetch eliminates the N+1 query bottleneck.
-
-### Positional Phrase Search
-Token positions are stored at index time. `"machine learning"` requires `pos(learning) = pos(machine) + 1` in at least one candidate document. Stop words increment the position counter, so `"machine to learning"` correctly fails to match `"machine learning"`.
-
-### Boolean Operator Precedence
-AND binds tighter than OR (standard algebra). `"python OR java AND backend"` evaluates as `python OR (java AND backend)` via an OR-split before AND-group evaluation.
-
-### Trie Autocomplete
-Prefix tree with frequency-ranked DFS traversal. O(P + K log K) where P = prefix length, K = completions. Serialised to `data/trie.json` on shutdown and reloaded on startup.
-
-### BK-Tree Spell Correction
-Metric tree using Levenshtein distance with triangle-inequality pruning. Query cost is empirically O(V^0.36) on English vocabularies. Rolling two-row DP with early termination at `max_distance`.
-
-### Reciprocal Rank Fusion
-`RRF(d) = Σᵢ 1/(60 + rankᵢ(d))`. Only cares about rank order, not score magnitude — no normalisation required between BM25 scores and cosine similarities. Empirically outperforms weighted linear combination (Cormack et al., 2009).
-
-### FAISS Vector Store
-`IndexFlatIP` with L2-normalised vectors = exact cosine similarity = inner product. Soft deletion via a `_deleted: set[int]`. `compact()` rebuilds without deleted vectors. Persisted as `index.faiss` + `id_map.json`.
-
-### Retrieval Evaluation
-Ground-truth pairs in `data/eval_dataset.json`. Metrics: Precision@K, Recall@K, MRR, MAP, NDCG@K. `RetrievalEvaluator` accepts any `(query, top_k) → [doc_ids]` function and compares systems side by side.
-
----
-
-## Architecture Overview
-
-```
-                        ┌─────────────────────────────────┐
-  User Query            │         FastAPI Routes           │
-       │                │   /search  /semantic  /hybrid    │
-       ▼                └──────────────┬──────────────────┘
-  ┌────────────┐                       │
-  │   Spell    │   ┌───────────────────▼──────────────────┐
-  │ Correction │   │            SearchService              │
-  │  (BK-tree) │   │  spell → expand → parse → retrieve   │
-  └─────┬──────┘   │  → BM25 rank → snippet → cache       │
-        │          └───────────────────┬──────────────────┘
-        ▼                              │
-  ┌────────────┐         ┌─────────────┴──────────────────┐
-  │  Query     │         │                                  │
-  │ Expansion  │   BM25  │  Inverted Index (SQLite)        │
-  │ (synonyms) │  ◄──────┤  postings(term_id, doc_id,      │
-  └────────────┘         │  tf, positions, field)          │
-                         └─────────────┬──────────────────┘
-                                       │
-                         ┌─────────────▼──────────────────┐
-                         │      EmbeddingPipeline          │
-                         │  doc → chunk → embed → FAISS    │
-                         └─────────────┬──────────────────┘
-                                       │
-              ┌────────────────────────▼─────────────────────┐
-              │            HybridSearchService                │
-              │                                               │
-              │   BM25 results + Semantic results             │
-              │          │                │                   │
-              │   ┌──────▼──────┐  ┌─────▼──────┐           │
-              │   │  BM25Ranker │  │  FAISS ANN  │           │
-              │   │ (batch SQL) │  │ (cosine sim)│           │
-              │   └──────┬──────┘  └─────┬───────┘           │
-              │          └──────┬────────┘                   │
-              │            RRF Fusion                         │
-              │       score = Σ 1/(60 + rankᵢ)               │
-              └──────────────────────────────────────────────┘
-                                 │
-                         Final ranked results
-```
-
----
-
-## Benchmarking
-
-```bash
-# Via Python
-python -c "
-from app.api.routes import create_app
+```python
 from app.config import EngineConfig
-from app.benchmarks.benchmarker import Benchmarker
-# ... (requires a running DB with indexed documents)
-"
+config = EngineConfig()
 
-# Via API — compare BM25 vs semantic vs hybrid
-curl 'http://localhost:8000/evaluation?systems=bm25,semantic,hybrid&top_k=10'
+# LLM (Phase 6) -- mock by default, no API key needed
+config.rag.llm.provider = "mock"        # mock | ollama | openai | anthropic | gemini
+config.rag.llm.model_name = "mock-llm-v1"
+
+# Agent settings (Phase 7)
+config.research.agent.max_retries = 3
+config.research.agent.default_timeout = 120.0
+
+# Workflow orchestration
+config.research.orchestrator.parallel = True  # parallel agent execution
+config.research.workflow.max_topics = 6
+```
+
+### Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `SEARCH_API_KEY` | Optional API authentication key |
+| `OPENAI_API_KEY` | OpenAI LLM provider |
+| `ANTHROPIC_API_KEY` | Anthropic LLM provider |
+| `GEMINI_API_KEY` | Google Gemini provider |
+
+---
+
+## Testing
+
+```bash
+python -m pytest tests/ -q                      # All: 465 pass, 1 skip
+python -m pytest tests/test_phase7.py -v         # Phase 7: 89 tests
+python -m pytest tests/test_phase6.py -v         # Phase 6: 122 tests
+python -m pytest tests/test_phase7.py::TestPlannerAgent -v  # Single class
 ```
 
 ---
 
-## What's Next (Phase 5 Ideas)
+## Security Controls
 
-- **Cross-Encoder Re-ranking** — Use a `cross-encoder/ms-marco-MiniLM-L-6-v2` to re-rank the top-50 hybrid results
-- **RAG Integration** — Feed the top-k hybrid passages into an LLM for answer generation
-- **Streaming search** — Server-Sent Events for progressive result delivery
-- **Multi-language support** — `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual retrieval
-- **Personalization** — Per-user click signal incorporated into ranking weights
-- **Approximate ANN** — Switch FAISS `IndexFlatIP` → `IndexHNSWFlat` for sub-linear query time at >100k vectors
-- **Distributed indexing** — Shard the inverted index and vector store across multiple nodes
+| Control | Implementation |
+|---|---|
+| Path traversal | `/index/directory` validates resolved path |
+| SSRF | `/crawl` blocks private/loopback IPs |
+| API key auth | Optional via `SEARCH_API_KEY` env var |
+| Rate limiting | 60 req/min per IP on `/search` |
+| Body size limit | 1MB max on document content |
+| Prompt injection | Regex detection with `[REDACTED]` substitution |
+| Agent sandboxing | Per-agent memory isolation, tool permission model |
+| Workflow validation | DAG cycle detection, step timeout enforcement |
+
+---
+
+## Key Algorithms Implemented
+
+| Algorithm | Phase | Complexity |
+|---|---|---|
+| Inverted Index | 1 | O(1) term lookup |
+| TF-IDF | 1 | O(T) per document |
+| BM25 (Robertson-Spark Jones) | 3 | O(T) per document |
+| BK-Tree (Levenshtein) | 3 | O(V^0.36) empirical |
+| Trie Autocomplete | 3 | O(P + K log K) |
+| Recursive-Descent AST Parser | 3 | O(Q) per query |
+| L2-Normalized FAISS (cosine) | 4 | O(N x D) exact search |
+| Reciprocal Rank Fusion | 4 | O(K) per document |
+| Cross-Encoder Reranking | 5 | O(K x L) per batch |
+| MMR Diversification | 6 | O(K^2) over chunks |
+| Bigram Jaccard Grounding | 6 | O(S x C) sentences x chunks |
+| Kahn's Topological Sort (DAG) | 7 | O(V + E) |
+
+---
+
+## Production Equivalents
+
+| Our Component | Industry Equivalent |
+|---|---|
+| BM25 + Inverted Index | Elasticsearch, Apache Lucene |
+| FAISS Vector Store | Pinecone, Weaviate, Milvus |
+| Hybrid Search + RRF | Vespa, Elasticsearch with kNN |
+| Cross-Encoder Reranking | Cohere Rerank, Jina Reranker |
+| RAG Pipeline | LangChain RetrievalQA, LlamaIndex |
+| Conversation Memory | LangChain ConversationBufferMemory |
+| Agent Framework | CrewAI, LangGraph, AutoGen |
+| Workflow Orchestration | Prefect, Airflow, LangGraph StateGraph |
+| Tool Framework | OpenAI Function Calling, Anthropic Tool Use |
+| MCP Registry | Anthropic MCP SDK |
+| Research Pipeline | OpenAI Deep Research, Perplexity Pro |
+
+---
+
+## License
+
+This project is for educational purposes -- built to learn information retrieval, NLP, and AI systems from first principles.
