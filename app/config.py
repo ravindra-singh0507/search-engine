@@ -1,8 +1,11 @@
 """
-Search Engine Configuration — Phase 6
+Search Engine Configuration — Phase 7
 
 Phase 6 adds: LLMConfig, ContextConfig, MemoryConfig, CitationConfig,
 GroundingConfig, RAGConfig — for the RAG / Knowledge Assistant layer.
+
+Phase 7 adds: AgentConfig, OrchestratorConfig, WorkflowConfig,
+ResearchConfig — for the Agentic Retrieval platform.
 """
 
 from dataclasses import dataclass, field
@@ -316,6 +319,70 @@ class RAGConfig:
     response_cache_size: int  = 128
 
 
+# ── Phase 7 configs ────────────────────────────────────────────────────────────
+
+@dataclass
+class AgentConfig:
+    """
+    Controls agent execution behaviour.
+
+    max_retries:     retry count per agent task (including first attempt).
+    base_delay_sec:  initial delay between retries (doubles each retry).
+    max_delay_sec:   cap on retry delay.
+    default_timeout: wall-clock limit per agent task in seconds.
+    max_memory:      max entries in per-agent memory.
+    """
+    max_retries:     int   = 3
+    base_delay_sec:  float = 0.5
+    max_delay_sec:   float = 10.0
+    default_timeout: float = 120.0
+    max_memory:      int   = 100
+
+
+@dataclass
+class OrchestratorConfig:
+    """
+    Controls the workflow orchestration engine.
+
+    parallel:         run independent steps concurrently (threading).
+    max_steps:        hard limit on steps per workflow (safety cap).
+    step_timeout_sec: default timeout per step if not overridden.
+    """
+    parallel:         bool  = False
+    max_steps:        int   = 20
+    step_timeout_sec: float = 120.0
+
+
+@dataclass
+class WorkflowConfig:
+    """
+    Controls workflow template defaults.
+
+    default_template: fallback template when none specified.
+    max_topics:       cap on sub-topics the planner can generate.
+    """
+    default_template: str = "investigation"
+    max_topics:       int = 6
+
+
+@dataclass
+class ResearchConfig:
+    """
+    Top-level config for the Phase 7 Agentic Retrieval layer.
+
+    agent:         agent execution settings
+    orchestrator:  workflow engine settings
+    workflow:      template defaults
+    max_sessions:  max concurrent research sessions
+    evidence_max:  max evidence records per session
+    """
+    agent:         AgentConfig        = field(default_factory=AgentConfig)
+    orchestrator:  OrchestratorConfig = field(default_factory=OrchestratorConfig)
+    workflow:      WorkflowConfig     = field(default_factory=WorkflowConfig)
+    max_sessions:  int = 50
+    evidence_max:  int = 500
+
+
 # ── Top-level config ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -349,3 +416,5 @@ class EngineConfig:
     personalization:      PersonalizationConfig     = field(default_factory=PersonalizationConfig)
     # Phase 6
     rag:                  RAGConfig                 = field(default_factory=RAGConfig)
+    # Phase 7
+    research:             ResearchConfig            = field(default_factory=ResearchConfig)

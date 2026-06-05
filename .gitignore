@@ -42,6 +42,9 @@ data/*.db
 data/*.sqlite
 *.sqlite
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Environment / secrets
 .env
