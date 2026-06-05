@@ -543,6 +543,145 @@ class Database:
         ]:
             c.execute(stmt)
 
+        # ── Phase 7 tables ─────────────────────────────────────────────────
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                task_id       TEXT PRIMARY KEY,
+                task_type     TEXT NOT NULL,
+                agent_type    TEXT NOT NULL,
+                goal          TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'pending',
+                priority      INTEGER NOT NULL DEFAULT 5,
+                params_json   TEXT DEFAULT '{}',
+                parent_id     TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at  TEXT
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                run_id        TEXT PRIMARY KEY,
+                task_id       TEXT NOT NULL,
+                agent_type    TEXT NOT NULL,
+                status        TEXT NOT NULL,
+                output_json   TEXT,
+                error         TEXT,
+                confidence    REAL DEFAULT 0,
+                latency_ms    REAL DEFAULT 0,
+                attempts      INTEGER DEFAULT 1,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (task_id) REFERENCES agent_tasks(task_id)
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                run_id          TEXT PRIMARY KEY,
+                workflow_name   TEXT NOT NULL,
+                goal            TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                total_steps     INTEGER DEFAULT 0,
+                completed_steps INTEGER DEFAULT 0,
+                failed_steps    INTEGER DEFAULT 0,
+                total_latency_ms REAL DEFAULT 0,
+                metadata_json   TEXT DEFAULT '{}',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at     TEXT
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS evidence_records (
+                evidence_id   TEXT PRIMARY KEY,
+                doc_id        INTEGER,
+                chunk_id      TEXT,
+                claim         TEXT,
+                content       TEXT,
+                score         REAL DEFAULT 0,
+                confidence    REAL DEFAULT 0,
+                source_title  TEXT,
+                validated     INTEGER DEFAULT 0,
+                tags_json     TEXT DEFAULT '[]',
+                session_id    TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS research_sessions (
+                session_id    TEXT PRIMARY KEY,
+                user_id       TEXT DEFAULT '',
+                goal          TEXT NOT NULL DEFAULT '',
+                status        TEXT DEFAULT 'active',
+                task_count    INTEGER DEFAULT 0,
+                evidence_count INTEGER DEFAULT 0,
+                event_count   INTEGER DEFAULT 0,
+                snapshot_json TEXT DEFAULT '{}',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS citation_validation_reports (
+                report_id           TEXT PRIMARY KEY,
+                session_id          TEXT,
+                citation_accuracy   REAL DEFAULT 0,
+                total_citations     INTEGER DEFAULT 0,
+                supported_count     INTEGER DEFAULT 0,
+                unsupported_count   INTEGER DEFAULT 0,
+                drift_count         INTEGER DEFAULT 0,
+                report_json         TEXT DEFAULT '{}',
+                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS research_reports (
+                report_id       TEXT PRIMARY KEY,
+                session_id      TEXT,
+                workflow_run_id TEXT,
+                goal            TEXT,
+                strategy        TEXT,
+                format          TEXT DEFAULT 'markdown',
+                report_text     TEXT,
+                evidence_used   INTEGER DEFAULT 0,
+                quality_json    TEXT DEFAULT '{}',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS agent_metrics (
+                metric_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_type    TEXT NOT NULL,
+                task_id       TEXT,
+                latency_ms    REAL DEFAULT 0,
+                success       INTEGER DEFAULT 0,
+                token_count   INTEGER DEFAULT 0,
+                metadata_json TEXT DEFAULT '{}',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Phase 7 indexes
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_agent_tasks_type    ON agent_tasks(agent_type)",
+            "CREATE INDEX IF NOT EXISTS idx_agent_tasks_status  ON agent_tasks(status)",
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_task     ON agent_runs(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_type     ON agent_runs(agent_type)",
+            "CREATE INDEX IF NOT EXISTS idx_workflow_runs_name  ON workflow_runs(workflow_name)",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_doc        ON evidence_records(doc_id)",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_session    ON evidence_records(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_research_sess_user  ON research_sessions(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_citval_session      ON citation_validation_reports(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reports_session     ON research_reports(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_agent_metrics_type  ON agent_metrics(agent_type)",
+        ]:
+            c.execute(stmt)
+
         self.conn.commit()
 
     def _migrate(self) -> None:
@@ -1510,3 +1649,214 @@ class Database:
         )
         self.conn.commit()
         return c.lastrowid
+
+    # ── Phase 7: Agent Tasks ──────────────────────────────────────────────────
+
+    def insert_agent_task(self, task_id: str, task_type: str, agent_type: str,
+                          goal: str, status: str = "pending", priority: int = 5,
+                          params_json: str = "{}", parent_id: str | None = None) -> str:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO agent_tasks "
+            "(task_id, task_type, agent_type, goal, status, priority, params_json, parent_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (task_id, task_type, agent_type, goal, status, priority, params_json, parent_id),
+        )
+        self.conn.commit()
+        return task_id
+
+    def update_agent_task_status(self, task_id: str, status: str) -> None:
+        self.conn.execute(
+            "UPDATE agent_tasks SET status = ?, completed_at = datetime('now') WHERE task_id = ?",
+            (status, task_id),
+        )
+        self.conn.commit()
+
+    def get_agent_tasks(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        if status:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_tasks ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 7: Agent Runs ───────────────────────────────────────────────────
+
+    def insert_agent_run(self, run_id: str, task_id: str, agent_type: str,
+                         status: str, output_json: str = None,
+                         error: str = None, confidence: float = 0,
+                         latency_ms: float = 0, attempts: int = 1) -> str:
+        self.conn.execute(
+            "INSERT INTO agent_runs "
+            "(run_id, task_id, agent_type, status, output_json, error, confidence, latency_ms, attempts) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (run_id, task_id, agent_type, status, output_json, error, confidence, latency_ms, attempts),
+        )
+        self.conn.commit()
+        return run_id
+
+    def get_agent_runs(self, agent_type: str | None = None, limit: int = 50) -> list[dict]:
+        if agent_type:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_runs WHERE agent_type = ? ORDER BY created_at DESC LIMIT ?",
+                (agent_type, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 7: Workflow Runs ────────────────────────────────────────────────
+
+    def insert_workflow_run(self, run_id: str, workflow_name: str, goal: str,
+                            status: str = "pending", total_steps: int = 0,
+                            metadata_json: str = "{}") -> str:
+        self.conn.execute(
+            "INSERT INTO workflow_runs "
+            "(run_id, workflow_name, goal, status, total_steps, metadata_json) "
+            "VALUES (?,?,?,?,?,?)",
+            (run_id, workflow_name, goal, status, total_steps, metadata_json),
+        )
+        self.conn.commit()
+        return run_id
+
+    def update_workflow_run(self, run_id: str, status: str,
+                            completed_steps: int = 0, failed_steps: int = 0,
+                            total_latency_ms: float = 0) -> None:
+        self.conn.execute(
+            "UPDATE workflow_runs SET status = ?, completed_steps = ?, "
+            "failed_steps = ?, total_latency_ms = ?, finished_at = datetime('now') "
+            "WHERE run_id = ?",
+            (status, completed_steps, failed_steps, total_latency_ms, run_id),
+        )
+        self.conn.commit()
+
+    def get_workflow_runs(self, limit: int = 20) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM workflow_runs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 7: Evidence Records ─────────────────────────────────────────────
+
+    def insert_evidence_record(self, evidence_id: str, doc_id: int,
+                                chunk_id: str, claim: str, content: str,
+                                score: float, confidence: float,
+                                source_title: str, validated: bool,
+                                tags_json: str, session_id: str = "") -> str:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO evidence_records "
+            "(evidence_id, doc_id, chunk_id, claim, content, score, confidence, "
+            "source_title, validated, tags_json, session_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (evidence_id, doc_id, chunk_id, claim, content, score, confidence,
+             source_title, int(validated), tags_json, session_id),
+        )
+        self.conn.commit()
+        return evidence_id
+
+    def get_evidence_by_session(self, session_id: str, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM evidence_records WHERE session_id = ? ORDER BY score DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 7: Research Sessions ────────────────────────────────────────────
+
+    def insert_research_session(self, session_id: str, user_id: str = "",
+                                 goal: str = "") -> str:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO research_sessions "
+            "(session_id, user_id, goal) VALUES (?,?,?)",
+            (session_id, user_id, goal),
+        )
+        self.conn.commit()
+        return session_id
+
+    def update_research_session(self, session_id: str, status: str = "active",
+                                 task_count: int = 0, evidence_count: int = 0,
+                                 event_count: int = 0, snapshot_json: str = "{}") -> None:
+        self.conn.execute(
+            "UPDATE research_sessions SET status = ?, task_count = ?, "
+            "evidence_count = ?, event_count = ?, snapshot_json = ?, "
+            "updated_at = datetime('now') WHERE session_id = ?",
+            (status, task_count, evidence_count, event_count, snapshot_json, session_id),
+        )
+        self.conn.commit()
+
+    def get_research_sessions(self, user_id: str | None = None, limit: int = 20) -> list[dict]:
+        if user_id:
+            rows = self.conn.execute(
+                "SELECT * FROM research_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM research_sessions ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 7: Research Reports ─────────────────────────────────────────────
+
+    def insert_research_report(self, report_id: str, session_id: str = "",
+                                workflow_run_id: str = "", goal: str = "",
+                                strategy: str = "", fmt: str = "markdown",
+                                report_text: str = "", evidence_used: int = 0,
+                                quality_json: str = "{}") -> str:
+        self.conn.execute(
+            "INSERT INTO research_reports "
+            "(report_id, session_id, workflow_run_id, goal, strategy, format, "
+            "report_text, evidence_used, quality_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (report_id, session_id, workflow_run_id, goal, strategy, fmt,
+             report_text, evidence_used, quality_json),
+        )
+        self.conn.commit()
+        return report_id
+
+    def get_research_reports(self, session_id: str | None = None, limit: int = 20) -> list[dict]:
+        if session_id:
+            rows = self.conn.execute(
+                "SELECT * FROM research_reports WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM research_reports ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Phase 7: Agent Metrics ────────────────────────────────────────────────
+
+    def insert_agent_metric(self, agent_type: str, task_id: str = "",
+                             latency_ms: float = 0, success: bool = True,
+                             token_count: int = 0, metadata_json: str = "{}") -> int:
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO agent_metrics "
+            "(agent_type, task_id, latency_ms, success, token_count, metadata_json) "
+            "VALUES (?,?,?,?,?,?)",
+            (agent_type, task_id, latency_ms, int(success), token_count, metadata_json),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_agent_metrics_summary(self) -> dict:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "AVG(latency_ms) AS avg_latency, "
+            "SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS success_count, "
+            "SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failure_count "
+            "FROM agent_metrics"
+        ).fetchone()
+        return dict(row) if row else {}

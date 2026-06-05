@@ -1520,4 +1520,309 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             "confidence_db_stats":     db.get_confidence_stats(),
         }
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PHASE 7 — Agentic Research Endpoints
+    # ══════════════════════════════════════════════════════════════════════════
+
+    from app.agents.base import (
+        Agent, AgentContext, AgentTask, AgentType, RetryPolicy,
+    )
+    from app.agents.planner import PlannerAgent
+    from app.agents.retrieval import RetrievalAgent
+    from app.agents.critic import CriticAgent
+    from app.agents.citation_validator import CitationValidationAgent
+    from app.agents.synthesis import SynthesisAgent
+    from app.orchestration.engine import (
+        AgentOrchestrator, WorkflowEngine, WorkflowStep,
+    )
+    from app.workflows.templates import get_workflow_registry
+    from app.tools.framework import create_default_registry as create_tool_registry
+    from app.mcp.registry import MCPRegistry
+    from app.reports.generator import ReportGenerator, ReportFormat
+    from app.research_memory.memory import ResearchSession
+
+    # Build agent instances
+    agent_retry = RetryPolicy(
+        max_attempts  = config.research.agent.max_retries,
+        base_delay_sec = config.research.agent.base_delay_sec,
+        max_delay_sec  = config.research.agent.max_delay_sec,
+    )
+    planner_agent     = PlannerAgent(retry_policy=agent_retry)
+    retrieval_agent   = RetrievalAgent(retry_policy=agent_retry)
+    critic_agent      = CriticAgent(retry_policy=agent_retry)
+    citval_agent      = CitationValidationAgent(retry_policy=agent_retry)
+    synthesis_agent   = SynthesisAgent(retry_policy=agent_retry)
+
+    agent_map = {
+        AgentType.PLANNER:           planner_agent,
+        AgentType.RETRIEVAL:         retrieval_agent,
+        AgentType.CRITIC:            critic_agent,
+        AgentType.CITATION_VALIDATOR: citval_agent,
+        AgentType.SYNTHESIS:         synthesis_agent,
+    }
+
+    agent_context = AgentContext(
+        retriever    = hybrid_svc,
+        db           = db,
+        rag_pipeline = rag_pipeline,
+        memory       = memory_svc,
+        config       = config.research,
+    )
+
+    orchestrator    = AgentOrchestrator(agent_map, agent_context, metrics)
+    workflow_engine = WorkflowEngine(
+        agent_map, agent_context, metrics,
+        parallel=config.research.orchestrator.parallel,
+    )
+    workflow_registry = get_workflow_registry()
+    tool_registry     = create_tool_registry()
+    mcp_registry      = MCPRegistry(tool_registry)
+    report_generator  = ReportGenerator()
+    research_sessions: dict[str, ResearchSession] = {}
+
+    # ── POST /research ────────────────────────────────────────────────────────
+
+    class ResearchRequest(BaseModel):
+        goal:         str
+        workflow:     str  = "investigation"
+        params:       dict = {}
+        session_id:   str  = ""
+        user_id:      str  = ""
+        parallel:     bool = False
+
+    @app.post("/research", summary="Run an agentic research workflow", tags=["Research"])
+    def run_research(req: ResearchRequest):
+        import uuid as _uuid
+        session_id = req.session_id or str(_uuid.uuid4())
+
+        session = ResearchSession(
+            session_id=session_id, goal=req.goal, user_id=req.user_id,
+        )
+        research_sessions[session_id] = session
+        db.insert_research_session(session_id, req.user_id, req.goal)
+
+        # Use planner to generate steps or workflow template
+        template = workflow_registry.get(req.workflow)
+        if template:
+            steps = template.generate(req.goal, req.params)
+        else:
+            plan_task = AgentTask(goal=req.goal, task_type="plan",
+                                  params={"max_topics": config.research.workflow.max_topics})
+            plan_result = planner_agent.run(plan_task, agent_context)
+            if not plan_result.is_success():
+                raise HTTPException(500, detail=f"Planning failed: {plan_result.error}")
+
+            from app.orchestration.engine import WorkflowStep as WS
+            steps = []
+            for s in plan_result.output.get("steps", []):
+                steps.append(WS(
+                    step_id    = s["step_id"],
+                    agent_type = AgentType(s["agent_type"]),
+                    goal       = s["goal"],
+                    depends_on = s.get("depends_on", []),
+                    optional   = s.get("optional", False),
+                ))
+
+        engine = WorkflowEngine(
+            agent_map, agent_context, metrics,
+            parallel=req.parallel,
+        )
+        run = engine.run(steps, goal=req.goal, workflow_name=req.workflow)
+
+        # Persist
+        db.insert_workflow_run(
+            run.run_id, run.workflow_name, run.goal,
+            run.status.value, len(run.steps),
+        )
+        db.update_workflow_run(
+            run.run_id, run.status.value,
+            run.success_count(), run.failure_count(), run.total_latency_ms,
+        )
+
+        # Extract final report if synthesis succeeded
+        final_report = None
+        for step_id, result in run.results.items():
+            if result.agent_type == AgentType.SYNTHESIS and result.is_success():
+                final_report = result.output
+                session.add_agent_result(result)
+
+        # Record all evidence
+        for step_id, result in run.results.items():
+            if result.evidence:
+                session.add_evidence(result.evidence)
+            session.add_agent_result(result)
+
+        metrics.record_workflow_run(run.total_latency_ms, run.status.value == "completed")
+
+        return {
+            "session_id":       session_id,
+            "run_id":           run.run_id,
+            "status":           run.status.value,
+            "total_steps":      len(run.steps),
+            "success_count":    run.success_count(),
+            "failure_count":    run.failure_count(),
+            "total_latency_ms": run.total_latency_ms,
+            "report":           final_report,
+            "step_results":     {
+                sid: r.to_dict() for sid, r in run.results.items()
+            },
+        }
+
+    # ── POST /research/plan ──────────────────────────────────────────────────
+
+    class PlanRequest(BaseModel):
+        goal:       str
+        max_topics: int = 6
+
+    @app.post("/research/plan", summary="Generate a research plan without executing", tags=["Research"])
+    def create_plan(req: PlanRequest):
+        task = AgentTask(goal=req.goal, task_type="plan",
+                         params={"max_topics": req.max_topics})
+        result = planner_agent.run(task, agent_context)
+        if not result.is_success():
+            raise HTTPException(500, detail=f"Planning failed: {result.error}")
+        return {
+            "plan":       result.output,
+            "confidence": result.confidence,
+            "latency_ms": result.latency_ms,
+        }
+
+    # ── POST /research/retrieve ──────────────────────────────────────────────
+
+    class RetrieveRequest(BaseModel):
+        query:   str
+        top_k:   int  = 5
+        use_rag: bool = False
+
+    @app.post("/research/retrieve", summary="Run a single retrieval agent", tags=["Research"])
+    def agent_retrieve(req: RetrieveRequest):
+        task = AgentTask(
+            goal=req.query, task_type="retrieve",
+            params={"query": req.query, "top_k": req.top_k, "use_rag": req.use_rag},
+        )
+        result = retrieval_agent.run(task, agent_context)
+        return result.to_dict()
+
+    # ── GET /research/workflows ──────────────────────────────────────────────
+
+    @app.get("/research/workflows", summary="List available workflow templates", tags=["Research"])
+    def list_workflows():
+        return {
+            "workflows": [
+                {"name": t.name, "description": t.description}
+                for t in workflow_registry.values()
+            ]
+        }
+
+    # ── GET /research/sessions ───────────────────────────────────────────────
+
+    @app.get("/research/sessions", summary="List research sessions", tags=["Research"])
+    def list_research_sessions(user_id: str = Query(default="")):
+        return db.get_research_sessions(user_id or None)
+
+    # ── GET /research/sessions/{session_id} ──────────────────────────────────
+
+    @app.get("/research/sessions/{session_id}", summary="Get research session detail", tags=["Research"])
+    def get_research_session(session_id: str):
+        session = research_sessions.get(session_id)
+        if session:
+            return session.to_snapshot()
+        rows = db.get_research_sessions()
+        for row in rows:
+            if row.get("session_id") == session_id:
+                return row
+        raise HTTPException(404, detail="Session not found")
+
+    # ── GET /research/reports ────────────────────────────────────────────────
+
+    @app.get("/research/reports", summary="List research reports", tags=["Research"])
+    def list_research_reports(session_id: str = Query(default="")):
+        return db.get_research_reports(session_id or None)
+
+    # ── POST /research/reports/generate ──────────────────────────────────────
+
+    class ReportRequest(BaseModel):
+        synthesis_output: dict
+        format:           str = "markdown"
+
+    @app.post("/research/reports/generate", summary="Generate a report from synthesis output", tags=["Research"])
+    def generate_report(req: ReportRequest):
+        try:
+            fmt = ReportFormat(req.format)
+        except ValueError:
+            raise HTTPException(400, detail=f"Unknown format: {req.format}. Use: markdown, html, json")
+        report_text = report_generator.generate(req.synthesis_output, fmt)
+        return {"format": req.format, "report": report_text}
+
+    # ── GET /research/workflow-runs ──────────────────────────────────────────
+
+    @app.get("/research/workflow-runs", summary="List workflow run history", tags=["Research"])
+    def list_workflow_runs():
+        return db.get_workflow_runs()
+
+    # ── GET /research/evidence ───────────────────────────────────────────────
+
+    @app.get("/research/evidence/{session_id}", summary="Get evidence for a session", tags=["Research"])
+    def get_evidence(session_id: str):
+        return db.get_evidence_by_session(session_id)
+
+    # ── GET /tools ───────────────────────────────────────────────────────────
+
+    @app.get("/tools", summary="List available tools", tags=["Tools"])
+    def list_tools():
+        return {"tools": tool_registry.all_schemas()}
+
+    # ── POST /tools/execute ──────────────────────────────────────────────────
+
+    class ToolRequest(BaseModel):
+        tool_name: str
+        params:    dict = {}
+
+    @app.post("/tools/execute", summary="Execute a tool by name", tags=["Tools"])
+    def execute_tool(req: ToolRequest):
+        from app.tools.framework import ToolExecutor
+        executor = ToolExecutor(tool_registry)
+        result = executor.execute(req.tool_name, req.params, agent_context)
+        return result.to_dict()
+
+    # ── MCP endpoints ────────────────────────────────────────────────────────
+
+    @app.get("/mcp/tools", summary="List MCP-compatible tools", tags=["MCP"])
+    def mcp_list_tools():
+        return {"tools": mcp_registry.list_tools()}
+
+    @app.post("/mcp/tools/call", summary="Call an MCP tool", tags=["MCP"])
+    def mcp_call_tool(name: str = Query(...), arguments: dict = {}):
+        return mcp_registry.call_tool(name, arguments, agent_context)
+
+    # ── Agent metrics ────────────────────────────────────────────────────────
+
+    @app.get("/research/metrics", summary="Agent and workflow metrics", tags=["Research"])
+    def research_metrics():
+        return {
+            "agent_executions":    metrics.agent_executions.value,
+            "agent_successes":     metrics.agent_successes.value,
+            "agent_failures":      metrics.agent_failures.value,
+            "workflow_runs":       metrics.workflow_runs.value,
+            "workflow_completions": metrics.workflow_completions.value,
+            "agent_latency":       metrics.agent_latency.snapshot(),
+            "workflow_latency":    metrics.workflow_latency.snapshot(),
+            "planner_latency":     metrics.planner_latency.snapshot(),
+            "retrieval_agent_latency": metrics.retrieval_agent_latency.snapshot(),
+            "critic_latency":      metrics.critic_latency.snapshot(),
+            "synthesis_latency":   metrics.synthesis_latency.snapshot(),
+            "db_metrics":          db.get_agent_metrics_summary(),
+        }
+
+    # ── GET /research/agents ─────────────────────────────────────────────────
+
+    @app.get("/research/agents", summary="List available agent types", tags=["Research"])
+    def list_agents():
+        return {
+            "agents": [
+                {"type": at.value, "description": f"{at.value} agent"}
+                for at in AgentType
+            ]
+        }
+
     return app
