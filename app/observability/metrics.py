@@ -192,6 +192,27 @@ class MetricsCollector:
         self.rag_grounding_latency    = Histogram("rag_grounding_latency_ms", (1, 5, 10, 25, 50))
         self.rag_citation_latency     = Histogram("rag_citation_latency_ms",  (1, 5, 10, 25, 50))
 
+        # Phase 7 counters
+        self.agent_executions         = Counter("agent_executions_total")
+        self.agent_successes          = Counter("agent_successes_total")
+        self.agent_failures           = Counter("agent_failures_total")
+        self.workflow_runs            = Counter("workflow_runs_total")
+        self.workflow_completions     = Counter("workflow_completions_total")
+        self.workflow_failures_ctr    = Counter("workflow_failures_total")
+        self.planner_invocations      = Counter("planner_invocations_total")
+        self.research_sessions_ctr    = Counter("research_sessions_total")
+
+        # Phase 7 histograms
+        agent_buckets = (10, 50, 100, 250, 500, 1000, 2500, 5000)
+        workflow_buckets = (100, 500, 1000, 2500, 5000, 10000, 30000)
+        self.agent_latency            = Histogram("agent_latency_ms",       agent_buckets)
+        self.planner_latency          = Histogram("planner_latency_ms",     agent_buckets)
+        self.retrieval_agent_latency  = Histogram("retrieval_agent_latency_ms", agent_buckets)
+        self.critic_latency           = Histogram("critic_latency_ms",      agent_buckets)
+        self.citval_latency           = Histogram("citval_latency_ms",      agent_buckets)
+        self.synthesis_latency        = Histogram("synthesis_latency_ms",   agent_buckets)
+        self.workflow_latency         = Histogram("workflow_latency_ms",    workflow_buckets)
+
         self._start_time = time.time()
 
     # ── Record helpers ─────────────────────────────────────────────────────
@@ -285,6 +306,41 @@ class MetricsCollector:
     def record_streaming(self) -> None:
         self.streaming_requests.inc()
 
+    # Phase 7 record helpers
+    def record_agent_execution(self, agent_type: str, latency_ms: float, success: bool = True) -> None:
+        self.agent_executions.inc()
+        self.agent_latency.observe(latency_ms)
+        if success:
+            self.agent_successes.inc()
+        else:
+            self.agent_failures.inc()
+        # Per-agent-type histograms
+        type_histograms = {
+            "planner":            self.planner_latency,
+            "retrieval":          self.retrieval_agent_latency,
+            "critic":             self.critic_latency,
+            "citation_validator": self.citval_latency,
+            "synthesis":          self.synthesis_latency,
+        }
+        hist = type_histograms.get(agent_type)
+        if hist:
+            hist.observe(latency_ms)
+
+    def record_workflow_run(self, latency_ms: float, success: bool = True) -> None:
+        self.workflow_runs.inc()
+        self.workflow_latency.observe(latency_ms)
+        if success:
+            self.workflow_completions.inc()
+        else:
+            self.workflow_failures_ctr.inc()
+
+    def record_planner(self, latency_ms: float) -> None:
+        self.planner_invocations.inc()
+        self.planner_latency.observe(latency_ms)
+
+    def record_research_session(self) -> None:
+        self.research_sessions_ctr.inc()
+
     # ── Reporting ─────────────────────────────────────────────────────────
 
     def to_prometheus_text(self) -> str:
@@ -307,6 +363,10 @@ class MetricsCollector:
             self.rag_queries, self.rag_tokens_used, self.chat_sessions,
             self.streaming_requests, self.grounding_checks,
             self.high_risk_responses, self.citations_generated,
+            # Phase 7
+            self.agent_executions, self.agent_successes, self.agent_failures,
+            self.workflow_runs, self.workflow_completions, self.workflow_failures_ctr,
+            self.planner_invocations, self.research_sessions_ctr,
         ]:
             lines += metric.to_prometheus()
 
@@ -323,6 +383,11 @@ class MetricsCollector:
             self.rag_total_latency, self.rag_llm_latency,
             self.rag_context_latency, self.rag_grounding_latency,
             self.rag_citation_latency,
+            # Phase 7
+            self.agent_latency, self.planner_latency,
+            self.retrieval_agent_latency, self.critic_latency,
+            self.citval_latency, self.synthesis_latency,
+            self.workflow_latency,
         ]:
             lines += hist.to_prometheus()
 
@@ -360,4 +425,11 @@ class MetricsCollector:
             "hybrid_search_latency":    self.hybrid_search_latency.snapshot(),
             "reranking_latency":        self.reranking_latency.snapshot(),
             "pipeline_latency":         self.pipeline_latency.snapshot(),
+            # Phase 7
+            "agent_executions_total":   self.agent_executions.value,
+            "agent_successes_total":    self.agent_successes.value,
+            "agent_failures_total":     self.agent_failures.value,
+            "workflow_runs_total":      self.workflow_runs.value,
+            "agent_latency":            self.agent_latency.snapshot(),
+            "workflow_latency":         self.workflow_latency.snapshot(),
         }
