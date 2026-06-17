@@ -187,7 +187,11 @@ def _rate_limit(request: Request) -> None:
 def create_app(config: EngineConfig | None = None) -> FastAPI:
     config = config or EngineConfig()
 
-    db        = Database(config.database.db_path)
+    db        = Database(
+        config.database.db_path,
+        backend=config.database.backend,
+        postgres_config=config.postgres,
+    )
     tokenizer = Tokenizer(TokenizerConfig(
         min_token_length=config.tokenizer.min_token_length,
         max_token_length=config.tokenizer.max_token_length,
@@ -286,6 +290,46 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
     # Project root for path-traversal validation
     _PROJECT_ROOT = Path.cwd().resolve()
 
+    # ── Phase 8: Event Bus ────────────────────────────────────────────────
+    from app.events.bus import InMemoryEventBus
+    from app.events.producer import EventProducer
+    from app.events.store import InMemoryEventStore
+    from app.events.retry import DeadLetterQueue
+
+    event_bus    = InMemoryEventBus()
+    event_store  = InMemoryEventStore(max_size=config.events.max_store_events)
+    event_dlq    = DeadLetterQueue(max_size=1000)
+    event_prod   = EventProducer(event_bus, source="search-engine")
+
+    # Wire event store: subscribe to all events for persistence
+    def _store_event(event):
+        event_store.append(event)
+    event_bus.subscribe("*", _store_event)
+
+    # ── Phase 8: Redis ────────────────────────────────────────────────────
+    try:
+        from app.redis.client import RealRedisClient
+        redis_client = RealRedisClient(config.redis)
+        redis_client.ping()
+        logger.info("Redis connected at %s:%d", config.redis.host, config.redis.port)
+    except Exception as exc:
+        from app.redis.client import InMemoryRedisClient
+        redis_client = InMemoryRedisClient()
+        logger.info("Redis unavailable (%s), using in-memory fallback", exc)
+
+    # ── Phase 8 Batch 2: Gateway ──────────────────────────────────────────
+    from app.gateway.cache import GatewayCache
+    from app.gateway.router import QueryRouter
+    from app.gateway.service import RetrievalGateway
+
+    gateway_cache = GatewayCache(
+        redis_client=redis_client,
+        l1_capacity=config.gateway.cache_max_size,
+        l2_ttl=config.gateway.cache_ttl,
+    )
+    query_router = QueryRouter()
+    retrieval_gw = None  # wired after pipeline is constructed (in lifespan)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         db.connect()
@@ -302,6 +346,14 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             "Engine started — vocab=%d terms, autocomplete=%d words, vectors=%d",
             len(vocab), autocomplete.vocabulary_size, vector_store.total_vectors,
         )
+        # Phase 8 Batch 2: wire gateway after all services are ready
+        nonlocal retrieval_gw
+        retrieval_gw = RetrievalGateway(
+            config=config.gateway,
+            search_service=search, semantic_service=semantic_svc,
+            hybrid_service=hybrid_svc, pipeline=pipeline,
+            redis_client=redis_client, metrics=metrics,
+        )
         yield
         autocomplete.save()
         # Phase 4: persist FAISS index
@@ -311,13 +363,14 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         logger.info("Engine stopped")
 
     app = FastAPI(
-        title="Search Engine — Phase 6 RAG & Knowledge Assistant Platform",
+        title="Search Engine — Phase 8 Distributed AI Infrastructure Platform",
         description=(
             "Full semantic retrieval: BM25 + FAISS + RRF hybrid + cross-encoder reranking, "
             "RAG pipeline with citations, grounding verification, conversation memory, "
-            "streaming responses, and confidence scoring."
+            "streaming responses, confidence scoring, agentic research workflows, "
+            "event-driven architecture, Redis caching, PostgreSQL-ready."
         ),
-        version="6.0.0",
+        version="8.0.0",
         lifespan=lifespan,
     )
 
@@ -337,6 +390,13 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         new_terms = db.get_all_terms()
         autocomplete.seed_from_vocabulary(new_terms)
         spell_checker.build_vocabulary(new_terms)
+
+        from app.events.topics import DOCUMENT_INDEXED
+        event_prod.emit(DOCUMENT_INDEXED, {
+            "doc_id": result.doc_id, "title": result.title,
+            "terms_indexed": result.terms_indexed, "latency_ms": round(ms, 2),
+        })
+
         return {
             "status": "indexed",
             "doc_id": result.doc_id,
@@ -1567,6 +1627,8 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         rag_pipeline = rag_pipeline,
         memory       = memory_svc,
         config       = config.research,
+        event_bus    = event_bus,
+        redis        = redis_client,
     )
 
     orchestrator    = AgentOrchestrator(agent_map, agent_context, metrics)
@@ -1823,6 +1885,273 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
                 {"type": at.value, "description": f"{at.value} agent"}
                 for at in AgentType
             ]
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PHASE 8 — Distributed Infrastructure Endpoints
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── GET /events ──────────────────────────────────────────────────────────
+
+    @app.get("/events", summary="List recent events", tags=["Events"])
+    def list_events(
+        topic: str = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=500),
+    ):
+        events = event_store.get_events(topic=topic, limit=limit)
+        return {
+            "total":  event_store.count(),
+            "events": [e.to_dict() for e in events],
+        }
+
+    # ── GET /events/dlq (must be before /events/{event_id} to avoid shadowing)
+
+    @app.get("/events/dlq", summary="List dead-letter queue", tags=["Events"])
+    def list_dlq(limit: int = Query(default=50, ge=1, le=500)):
+        return {
+            "count":        event_dlq.count(),
+            "dead_letters": event_dlq.get_all(limit=limit),
+        }
+
+    # ── POST /events/dlq/{event_id}/retry ────────────────────────────────────
+
+    @app.post("/events/dlq/{event_id}/retry",
+              summary="Retry a dead-lettered event", tags=["Events"])
+    def retry_dlq_event(event_id: str):
+        ok = event_dlq.retry(event_id, event_bus)
+        if not ok:
+            raise HTTPException(404, detail=f"Event {event_id!r} not in DLQ")
+        return {"status": "retried", "event_id": event_id}
+
+    # ── GET /events/{event_id} ───────────────────────────────────────────────
+
+    @app.get("/events/{event_id}", summary="Get event by ID", tags=["Events"])
+    def get_event(event_id: str):
+        event = event_store.get_event(event_id)
+        if event is None:
+            raise HTTPException(404, detail=f"Event {event_id!r} not found")
+        return event.to_dict()
+
+    # ── GET /health ──────────────────────────────────────────────────────────
+
+    @app.get("/health", summary="Health check", tags=["Infrastructure"])
+    def health_check():
+        checks = {
+            "status":   "healthy",
+            "database": "connected" if (db.conn is not None or db.is_postgres) else "disconnected",
+            "events":   "enabled" if config.events.enabled else "disabled",
+        }
+        try:
+            redis_client.ping()
+            checks["redis"] = "connected"
+        except Exception:
+            checks["redis"] = "disconnected"
+        return checks
+
+    # ── GET /infrastructure/stats ────────────────────────────────────────────
+
+    @app.get("/infrastructure/stats",
+             summary="Infrastructure component status", tags=["Infrastructure"])
+    def infrastructure_stats():
+        return {
+            "database_backend": "postgres" if db.is_postgres else "sqlite",
+            "event_bus":        config.events.backend,
+            "event_store_size": event_store.count(),
+            "dlq_size":         event_dlq.count(),
+            "redis_type":       type(redis_client).__name__,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PHASE 8 BATCH 2 — Distributed Services Endpoints
+    # ══════════════════════════════════════════════════════════════════════════
+
+    from app.gateway.models import GatewayRequest
+
+    # ── POST /gateway/search ─────────────────────────────────────────────────
+
+    @app.post("/gateway/search",
+              summary="Retrieval gateway — unified search with caching + routing",
+              tags=["Gateway"])
+    def gateway_search(
+        q:       str  = Query(..., min_length=1),
+        mode:    str  = Query(default="hybrid", description="bm25|semantic|hybrid|pipeline"),
+        top_k:   int  = Query(default=10, ge=1, le=50),
+        fusion:  str  = Query(default="rrf"),
+        rerank:  bool = Query(default=True),
+    ):
+        if retrieval_gw is None:
+            raise HTTPException(503, detail="Gateway not yet initialized")
+        gw_req = GatewayRequest(
+            query=q, mode=mode, top_k=top_k,
+            fusion=fusion, rerank=rerank,
+        )
+        resp = retrieval_gw.search(gw_req)
+        return {
+            "query":          resp.query,
+            "mode":           resp.mode,
+            "results":        resp.results,
+            "total_results":  resp.total_results,
+            "latency_ms":     resp.latency_ms,
+            "cache_hit":      resp.cache_hit,
+            "fusion_strategy": resp.fusion_strategy,
+            "reranked":       resp.reranked,
+        }
+
+    # ── GET /gateway/stats ───────────────────────────────────────────────────
+
+    @app.get("/gateway/stats", summary="Gateway statistics", tags=["Gateway"])
+    def gateway_stats():
+        if retrieval_gw is None:
+            return {"status": "not_initialized"}
+        return retrieval_gw.stats()
+
+    # ── GET /gateway/cache/stats ─────────────────────────────────────────────
+
+    @app.get("/gateway/cache/stats", summary="Gateway cache statistics", tags=["Gateway"])
+    def gateway_cache_stats():
+        return gateway_cache.stats()
+
+    # ── DELETE /gateway/cache ────────────────────────────────────────────────
+
+    @app.delete("/gateway/cache", summary="Invalidate gateway cache", tags=["Gateway"])
+    def gateway_cache_invalidate():
+        count = gateway_cache.invalidate()
+        return {"status": "cleared", "invalidated": count}
+
+    # ── GET /distributed/crawler/stats ───────────────────────────────────────
+
+    @app.get("/distributed/crawler/stats",
+             summary="Distributed crawler status", tags=["Distributed"])
+    def distributed_crawler_stats():
+        return {
+            "status": "available",
+            "config": {
+                "max_workers": config.distributed_crawler.max_workers,
+                "frontier_max_size": config.distributed_crawler.frontier_max_size,
+                "batch_size": config.distributed_crawler.batch_size,
+            },
+        }
+
+    # ── GET /distributed/indexing/stats ──────────────────────────────────────
+
+    @app.get("/distributed/indexing/stats",
+             summary="Distributed indexing status", tags=["Distributed"])
+    def distributed_indexing_stats():
+        return {
+            "status": "available",
+            "config": {
+                "num_indexing_workers": config.distributed_indexing.num_indexing_workers,
+                "num_embedding_workers": config.distributed_indexing.num_embedding_workers,
+                "batch_size": config.distributed_indexing.batch_size,
+                "auto_embed": config.distributed_indexing.auto_embed,
+            },
+        }
+
+    # ── GET /vector-store/backend ────────────────────────────────────────────
+
+    @app.get("/vector-store/backend",
+             summary="Vector store backend info", tags=["Embeddings"])
+    def vector_store_backend():
+        return {
+            "backend": type(vector_store).__name__,
+            "total_vectors": vector_store.total_vectors,
+            "qdrant_configured": config.qdrant.host != "",
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PHASE 8 BATCH 3 — Platform Services Endpoints
+    # ══════════════════════════════════════════════════════════════════════════
+
+    from app.services.registry import ServiceRegistry
+    from app.services.health import HealthCheck
+    from app.tenancy.manager import TenantManager
+    from app.tenancy.context import TenantContext
+
+    service_registry = ServiceRegistry(config.service_registry, redis_client=redis_client)
+    health_checker   = HealthCheck()
+    tenant_manager   = TenantManager(config.tenancy, redis_client=redis_client)
+
+    health_checker.add_check("database", lambda: db.conn is not None or db.is_postgres)
+    health_checker.add_check("events", lambda: config.events.enabled)
+
+    # ── GET /services ────────────────────────────────────────────────────────
+
+    @app.get("/services", summary="List registered services", tags=["Services"])
+    def list_services():
+        return service_registry.get_all_services()
+
+    # ── POST /services/register ──────────────────────────────────────────────
+
+    @app.post("/services/register", summary="Register a service instance", tags=["Services"])
+    def register_service(
+        name: str = Query(...), host: str = Query(...), port: int = Query(...),
+    ):
+        instance_id = service_registry.register(name, host, port)
+        return {"instance_id": instance_id, "service": name}
+
+    # ── GET /services/health ─────────────────────────────────────────────────
+
+    @app.get("/services/health", summary="Detailed health check", tags=["Services"])
+    def detailed_health():
+        return health_checker.readiness()
+
+    # ── GET /tenants ─────────────────────────────────────────────────────────
+
+    @app.get("/tenants", summary="List tenants", tags=["Tenancy"])
+    def list_tenants():
+        return {"tenants": [t.__dict__ for t in tenant_manager.list_tenants()]}
+
+    # ── POST /tenants ────────────────────────────────────────────────────────
+
+    @app.post("/tenants", summary="Create a tenant", tags=["Tenancy"])
+    def create_tenant(
+        tenant_id: str = Query(...), name: str = Query(...),
+    ):
+        t = tenant_manager.create_tenant(tenant_id, name)
+        return t.__dict__
+
+    # ── GET /tenants/{tenant_id} ─────────────────────────────────────────────
+
+    @app.get("/tenants/{tenant_id}", summary="Get tenant details", tags=["Tenancy"])
+    def get_tenant(tenant_id: str):
+        t = tenant_manager.get_tenant(tenant_id)
+        if t is None:
+            raise HTTPException(404, detail=f"Tenant {tenant_id!r} not found")
+        return t.__dict__
+
+    # ── GET /tenants/{tenant_id}/usage ───────────────────────────────────────
+
+    @app.get("/tenants/{tenant_id}/usage", summary="Tenant usage stats", tags=["Tenancy"])
+    def get_tenant_usage(tenant_id: str):
+        usage = tenant_manager.get_usage(tenant_id)
+        return usage.__dict__
+
+    # ── GET /agents/distributed/stats ────────────────────────────────────────
+
+    @app.get("/agents/distributed/stats",
+             summary="Distributed agent execution stats", tags=["Agents"])
+    def distributed_agent_stats():
+        return {
+            "config": {
+                "max_workers": config.agent_execution.max_workers,
+                "max_queue_size": config.agent_execution.max_queue_size,
+                "scheduling_strategy": config.agent_execution.scheduling_strategy,
+            },
+            "status": "available",
+        }
+
+    # ── GET /workflows/distributed/stats ─────────────────────────────────────
+
+    @app.get("/workflows/distributed/stats",
+             summary="Distributed workflow engine stats", tags=["Workflows"])
+    def distributed_workflow_stats():
+        return {
+            "config": {
+                "max_concurrent": config.distributed_workflow.max_concurrent_workflows,
+                "checkpoint_enabled": config.distributed_workflow.checkpoint_enabled,
+                "state_backend": config.distributed_workflow.state_backend,
+            },
+            "status": "available",
         }
 
     return app

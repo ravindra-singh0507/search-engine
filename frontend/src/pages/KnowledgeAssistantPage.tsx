@@ -16,7 +16,7 @@ interface Citation {
   score: number
 }
 
-const API = 'http://localhost:8000'
+const API = '/api'
 
 const riskColor = (risk: string) => {
   if (risk === 'low')    return 'text-green-600 bg-green-50'
