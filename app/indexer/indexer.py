@@ -152,7 +152,6 @@ class Indexer:
             term_id = self.db.get_or_create_term(term)
             positions = title_result.positions.get(term, [])
             postings_batch.append((term_id, doc_id, freq, json.dumps(positions), "title"))
-            postings_batch.append((term_id, doc_id, freq, json.dumps(positions), "title"))
 
         if postings_batch:
             self.db.batch_insert_postings(postings_batch)

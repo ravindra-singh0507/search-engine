@@ -551,6 +551,12 @@ class GeminiProvider:
     def model_name(self) -> str:
         return self._cfg.model_name
 
+    def _headers(self) -> dict:
+        return {
+            "Content-Type":   "application/json",
+            "x-goog-api-key": self._key,
+        }
+
     def generate(self, prompt: str, system: str = "", **kwargs) -> LLMResponse:
         t0 = time.perf_counter()
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
@@ -564,11 +570,11 @@ class GeminiProvider:
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
 
-        url = (f"{self._base}/models/{self._cfg.model_name}:generateContent"
-               f"?key={self._key}")
+        url = f"{self._base}/models/{self._cfg.model_name}:generateContent"
 
         def _call():
-            return requests.post(url, json=payload, timeout=self._cfg.timeout)
+            return requests.post(url, headers=self._headers(),
+                                 json=payload, timeout=self._cfg.timeout)
 
         resp = _with_retry(_call, self._cfg.max_retries)
         resp.raise_for_status()
@@ -602,9 +608,9 @@ class GeminiProvider:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
 
         url = (f"{self._base}/models/{self._cfg.model_name}:streamGenerateContent"
-               f"?alt=sse&key={self._key}")
+               f"?alt=sse")
 
-        with requests.post(url, json=payload, stream=True,
+        with requests.post(url, headers=self._headers(), json=payload, stream=True,
                            timeout=self._cfg.timeout) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():

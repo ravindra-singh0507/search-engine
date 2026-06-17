@@ -137,10 +137,7 @@ class RAGResponse:
 
     def __post_init__(self) -> None:
         if not self.formatted_answer:
-            cited = next(
-                (c for c in [self.answer] if c), ""
-            )
-            self.formatted_answer = cited
+            self.formatted_answer = self.answer or ""
 
 
 # ── RAG Pipeline ──────────────────────────────────────────────────────────────
@@ -189,7 +186,10 @@ class RAGPipeline:
         if request.multi_step and self.config.enable_multi_step:
             subqueries = self._decompose_query(request.query)
 
-        queries_to_run = subqueries if subqueries else [request.query]
+        # Prompt injection detection — sanitize before use in retrieval/prompts
+        safe_query = _sanitize_query(request.query)
+
+        queries_to_run = subqueries if subqueries else [safe_query]
 
         # Stage 1: Retrieval (all sub-queries merged)
         t0 = time.perf_counter()
@@ -199,7 +199,7 @@ class RAGPipeline:
         # Stage 2: Context construction
         t0 = time.perf_counter()
         context = self.ctx_builder.build(
-            chunks, query=request.query,
+            chunks, query=safe_query,
             max_tokens=self.config.context.max_tokens,
         )
         latencies["context_ms"] = round((time.perf_counter() - t0) * 1000, 2)
@@ -212,13 +212,10 @@ class RAGPipeline:
         rendered = self.prompts.render(
             name=request.template,
             context=context.text,
-            question=request.query,
+            question=safe_query,
             history=history,
         )
         latencies["prompt_ms"] = round((time.perf_counter() - t0) * 1000, 2)
-
-        # Prompt injection detection
-        safe_query = _sanitize_query(request.query)
 
         # Stage 4: LLM generation
         t0 = time.perf_counter()

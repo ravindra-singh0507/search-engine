@@ -14,3 +14,9 @@ psutil>=5.9.0
 numpy>=1.24.0
 sentence-transformers>=2.7.0
 faiss-cpu>=1.8.0
+# Phase 8 — Distributed Infrastructure (optional — fallback to in-memory)
+redis>=5.0.0
+psycopg2-binary>=2.9.0
+# Phase 8 Batch 2 — Distributed Services (optional — fallback when unavailable)
+confluent-kafka>=2.3.0
+qdrant-client>=1.9.0

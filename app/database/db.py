@@ -1,14 +1,25 @@
 """
-Database Layer — Phase 3
+Database Layer — Phase 8
 
-Extends the Phase 2 schema with:
+Extends the Phase 7 schema with:
 
-  search_logs   — every search query with latency and result count
-  click_logs    — every result click with position
-  query_stats   — per-query aggregate counters (for autocomplete / trending)
+  events — event store for the event-driven architecture
 
-The postings table gains a `field` column ('title' | 'body') so the
-ranker can boost title matches independently.
+Phase 8 adds a backend abstraction layer (DatabaseBackend protocol)
+enabling PostgreSQL as an alternative to SQLite.  The default backend
+remains SQLite for development and testing.  PostgreSQL is used in
+production via Docker Compose.
+
+=== BACKEND ABSTRACTION ===
+
+  Database
+    └── _backend: DatabaseBackend
+          ├── SQLiteBackend   (default, dev/test)
+          └── PostgreSQLBackend (production, via config)
+
+The Database class API (90+ methods) is UNCHANGED.  Only the internal
+connection management is swapped.  self.conn is preserved as a property
+for backward compatibility (callers like crawler.py check db.conn).
 
 === SCHEMA ===
 
@@ -20,6 +31,8 @@ ranker can boost title matches independently.
   click_logs    click_id, log_id, doc_id, position, timestamp
   query_stats   query_id, query (UNIQUE), total_searches, avg_latency_ms,
                 zero_result_searches, last_searched
+  events        event_id, topic, payload_json, source, correlation_id,
+                status, retry_count, max_retries, error_message, created_at
 
 === AT GOOGLE SCALE ===
 
@@ -144,29 +157,66 @@ class QueryStatRecord:
 
 class Database:
     """
-    SQLite-backed storage.  Single persistent connection in WAL mode.
-    Thread-safe for reads; indexing serialises through the GIL.
+    Storage layer with pluggable backend.
+
+    Default: SQLiteBackend (WAL mode, single persistent connection).
+    Production: PostgreSQLBackend (connection pool via psycopg2).
+
+    The backend is selected by the `backend` parameter:
+      - "sqlite" (default): uses SQLiteBackend
+      - "postgres": uses PostgreSQLBackend (falls back to SQLite if unavailable)
+
+    self.conn is preserved as a property for backward compatibility.
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, backend: str = "sqlite",
+                 postgres_config=None):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._backend_type = backend
+        self._postgres_config = postgres_config
         self.conn: Optional[sqlite3.Connection] = None
+        self._backend = None
 
     def connect(self) -> None:
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.execute("PRAGMA cache_size=-32000")  # 32 MB page cache
+        from app.database.backend import SQLiteBackend, PostgreSQLBackend
+
+        if self._backend_type == "postgres" and self._postgres_config:
+            try:
+                pg = PostgreSQLBackend(self._postgres_config)
+                pg.connect()
+                self._backend = pg
+                self.conn = None
+                logger.info("Database using PostgreSQL backend")
+            except Exception as exc:
+                logger.warning(
+                    "PostgreSQL unavailable (%s), falling back to SQLite", exc
+                )
+                self._backend_type = "sqlite"
+
+        if self._backend_type != "postgres" or self._backend is None:
+            self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA foreign_keys=ON")
+            self.conn.execute("PRAGMA cache_size=-32000")
+            self._backend = None
+            logger.info("Database connected at %s (SQLite)", self.db_path)
+
         self._create_tables()
         self._migrate()
-        logger.info("Database connected at %s", self.db_path)
 
     def close(self) -> None:
+        if self._backend:
+            self._backend.close()
+            self._backend = None
         if self.conn:
             self.conn.close()
             self.conn = None
+
+    @property
+    def is_postgres(self) -> bool:
+        return self._backend is not None
 
     # ── Schema ─────────────────────────────────────────────────────────────
 
@@ -679,6 +729,31 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_citval_session      ON citation_validation_reports(session_id)",
             "CREATE INDEX IF NOT EXISTS idx_reports_session     ON research_reports(session_id)",
             "CREATE INDEX IF NOT EXISTS idx_agent_metrics_type  ON agent_metrics(agent_type)",
+        ]:
+            c.execute(stmt)
+
+        # ── Phase 8 tables ─────────────────────────────────────────────────
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                event_id       TEXT PRIMARY KEY,
+                topic          TEXT NOT NULL,
+                payload_json   TEXT NOT NULL DEFAULT '{}',
+                source         TEXT DEFAULT '',
+                correlation_id TEXT DEFAULT '',
+                causation_id   TEXT DEFAULT '',
+                status         TEXT DEFAULT 'pending',
+                retry_count    INTEGER DEFAULT 0,
+                max_retries    INTEGER DEFAULT 3,
+                error_message  TEXT,
+                created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_events_topic   ON events(topic)",
+            "CREATE INDEX IF NOT EXISTS idx_events_status  ON events(status)",
+            "CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)",
         ]:
             c.execute(stmt)
 
@@ -1860,3 +1935,84 @@ class Database:
             "FROM agent_metrics"
         ).fetchone()
         return dict(row) if row else {}
+
+    # ── Phase 8: Event Store ──────────────────────────────────────────────────
+
+    def insert_event(self, event_id: str, topic: str, payload_json: str,
+                     source: str = "", correlation_id: str = "",
+                     causation_id: str = "", status: str = "pending",
+                     retry_count: int = 0, max_retries: int = 3) -> str:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO events "
+            "(event_id, topic, payload_json, source, correlation_id, "
+            "causation_id, status, retry_count, max_retries) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (event_id, topic, payload_json, source, correlation_id,
+             causation_id, status, retry_count, max_retries),
+        )
+        self.conn.commit()
+        return event_id
+
+    def get_events(self, topic: str | None = None, status: str | None = None,
+                   limit: int = 100) -> list[dict]:
+        conditions = []
+        params: list = []
+        if topic:
+            conditions.append("topic = ?")
+            params.append(topic)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        where = " AND ".join(conditions)
+        sql = "SELECT * FROM events"
+        if where:
+            sql += f" WHERE {where}"
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_event(self, event_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_event_status(self, event_id: str, status: str,
+                            error_message: str | None = None,
+                            retry_count: int | None = None) -> None:
+        parts = ["status = ?"]
+        params: list = [status]
+        if error_message is not None:
+            parts.append("error_message = ?")
+            params.append(error_message)
+        if retry_count is not None:
+            parts.append("retry_count = ?")
+            params.append(retry_count)
+        params.append(event_id)
+        self.conn.execute(
+            f"UPDATE events SET {', '.join(parts)} WHERE event_id = ?",
+            tuple(params),
+        )
+        self.conn.commit()
+
+    def count_events(self, topic: str | None = None) -> int:
+        if topic:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE topic = ?", (topic,)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM events"
+            ).fetchone()
+        return row["n"]
+
+    def delete_events(self, before_date: str | None = None) -> int:
+        if before_date:
+            c = self.conn.execute(
+                "DELETE FROM events WHERE created_at < ?", (before_date,)
+            )
+        else:
+            c = self.conn.execute("DELETE FROM events")
+        self.conn.commit()
+        return c.rowcount

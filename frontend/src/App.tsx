@@ -6,12 +6,16 @@ import MetricsPage       from './pages/MetricsPage'
 import CrawlerPage       from './pages/CrawlerPage'
 import SemanticSearchPage from './pages/SemanticSearchPage'
 import HybridSearchPage   from './pages/HybridSearchPage'
+import KnowledgeAssistantPage from './pages/KnowledgeAssistantPage'
+import AgentDashboardPage from './pages/AgentDashboardPage'
 import './index.css'
 
 const NAV = [
   ['/',         'Search'],
   ['/semantic', 'Semantic'],
   ['/hybrid',   'Hybrid'],
+  ['/chat',     'Chat'],
+  ['/research', 'Research'],
   ['/analytics','Analytics'],
   ['/metrics',  'Metrics'],
   ['/crawler',  'Crawler'],
@@ -34,6 +38,8 @@ export default function App() {
           <Route path="/"          element={<SearchPage />} />
           <Route path="/semantic"  element={<SemanticSearchPage />} />
           <Route path="/hybrid"    element={<HybridSearchPage />} />
+          <Route path="/chat"      element={<KnowledgeAssistantPage />} />
+          <Route path="/research"  element={<AgentDashboardPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/metrics"   element={<MetricsPage />} />
           <Route path="/crawler"   element={<CrawlerPage />} />

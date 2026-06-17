@@ -70,6 +70,7 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -200,6 +201,8 @@ class AgentContext:
       config         — Phase 7 AgentConfig (retries, timeouts, etc.)
       session_id     — current research session identifier
       user_id        — optional user identifier
+      event_bus      — Phase 8 EventBus (optional, for publishing events)
+      redis          — Phase 8 RedisClient (optional, for distributed state)
       extra          — catch-all for phase-specific extras
     """
     retriever:    Any   = None
@@ -210,6 +213,8 @@ class AgentContext:
     config:       Any   = None
     session_id:   Optional[str] = None
     user_id:      Optional[str] = None
+    event_bus:    Any   = None
+    redis:        Any   = None
     extra:        dict[str, Any] = field(default_factory=dict)
 
 
@@ -231,7 +236,7 @@ class AgentMemory:
     """
 
     def __init__(self, max_entries: int = 100):
-        self._entries: list[dict] = []
+        self._entries: deque[dict] = deque(maxlen=max_entries)
         self._max = max_entries
 
     def remember(self, key: str, value: Any, metadata: dict | None = None) -> None:
@@ -242,8 +247,6 @@ class AgentMemory:
             "timestamp": time.time(),
         }
         self._entries.append(entry)
-        if len(self._entries) > self._max:
-            self._entries.pop(0)
 
     def recall(self, key: str) -> list[Any]:
         return [e["value"] for e in self._entries if e["key"] == key]

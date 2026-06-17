@@ -1,11 +1,14 @@
 """
-Search Engine Configuration — Phase 7
+Search Engine Configuration — Phase 8
 
 Phase 6 adds: LLMConfig, ContextConfig, MemoryConfig, CitationConfig,
 GroundingConfig, RAGConfig — for the RAG / Knowledge Assistant layer.
 
 Phase 7 adds: AgentConfig, OrchestratorConfig, WorkflowConfig,
 ResearchConfig — for the Agentic Retrieval platform.
+
+Phase 8 adds: EventConfig, PostgresConfig, RedisConfig — for the
+Distributed AI Infrastructure platform.
 """
 
 from dataclasses import dataclass, field
@@ -17,6 +20,7 @@ from pathlib import Path
 @dataclass
 class DatabaseConfig:
     db_path: Path = Path("data/search_engine.db")
+    backend: str = "sqlite"
 
 
 @dataclass
@@ -383,6 +387,386 @@ class ResearchConfig:
     evidence_max:  int = 500
 
 
+# ── Phase 8 configs ────────────────────────────────────────────────────────────
+
+@dataclass
+class PostgresConfig:
+    """
+    PostgreSQL connection settings.
+
+    Used when DatabaseConfig.backend = "postgres".
+    Connection pooling via psycopg2.pool.ThreadedConnectionPool.
+    Graceful fallback to SQLite if PostgreSQL is unavailable.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google Cloud SQL / Amazon RDS — managed PostgreSQL
+      Uber:    Schemaless on MySQL/PostgreSQL shards
+      Netflix: CockroachDB / PostgreSQL with connection pooling via PgBouncer
+    """
+    host:      str = "localhost"
+    port:      int = 5432
+    database:  str = "search_engine"
+    user:      str = "search_engine"
+    password:  str = ""
+    pool_size: int = 10
+    pool_min:  int = 2
+    ssl_mode:  str = "prefer"
+
+
+@dataclass
+class EventConfig:
+    """
+    Controls the event-driven architecture.
+
+    backend:           "memory" (in-process) or "kafka" (distributed).
+    store_backend:     "memory" or "database" (persists events to DB).
+    max_store_events:  Bounded event store size (FIFO eviction).
+    retry_max_retries: Default retry count for failed event delivery.
+    retry_base_delay:  Base delay for exponential backoff.
+    dlq_enabled:       Dead-letter queue for permanently failed events.
+
+    === THEORY ===
+
+    Event-driven architecture decouples producers from consumers via
+    asynchronous message passing.  This enables:
+      - Loose coupling between services
+      - Horizontal scaling (add consumers independently)
+      - Audit trail (event store)
+      - Replay capability (re-process from event store)
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google:  Pub/Sub
+      Netflix: Apache Kafka + Hermes
+      Uber:    Apache Kafka + uReplicator
+      OpenAI:  Internal event bus for job orchestration
+    """
+    enabled:           bool  = True
+    backend:           str   = "memory"
+    store_backend:     str   = "memory"
+    max_store_events:  int   = 10000
+    retry_max_retries: int   = 3
+    retry_base_delay:  float = 1.0
+    dlq_enabled:       bool  = True
+
+
+@dataclass
+class RedisConfig:
+    """
+    Redis connection settings.
+
+    Used for distributed caching, session storage, distributed locks,
+    and rate limiting.  Graceful fallback to in-memory implementations
+    when Redis is unavailable.
+
+    === THEORY ===
+
+    Redis is an in-memory data structure store supporting strings, hashes,
+    lists, sets, sorted sets, and streams.  Sub-millisecond latency for
+    reads/writes.  Used as:
+      - L2 cache (behind in-process LRU L1 cache)
+      - Session store (server-side sessions)
+      - Distributed lock (SETNX + TTL)
+      - Rate limiter (sliding window via sorted sets)
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google:    Memorystore (managed Redis)
+      Netflix:   EVCache (Redis-based)
+      Uber:      Redis + custom sharding
+      OpenSearch: Redis for query caching
+    """
+    host:           str   = "localhost"
+    port:           int   = 6379
+    db:             int   = 0
+    password:       str   = ""
+    ssl:            bool  = False
+    prefix:         str   = "se:"
+    socket_timeout: float = 5.0
+
+
+# ── Phase 8 Batch 2 configs ────────────────────────────────────────────────────
+
+@dataclass
+class KafkaConfig:
+    """
+    Apache Kafka connection and topic settings.
+
+    === THEORY ===
+
+    Kafka is a distributed event streaming platform using a partitioned,
+    replicated commit log.  Each topic is split into partitions for parallel
+    consumption.  Consumer groups enable horizontal scaling: each partition
+    is consumed by exactly one consumer in the group.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google:   Pub/Sub
+      Netflix:  Kafka + custom Hermes layer
+      Uber:     Kafka + uReplicator for cross-DC replication
+      LinkedIn: Kafka (originally developed there)
+    """
+    bootstrap_servers: str  = "localhost:9092"
+    group_id:          str  = "search-engine"
+    auto_offset_reset: str  = "earliest"
+    enable_auto_commit: bool = True
+    max_poll_records:   int  = 100
+    session_timeout_ms: int  = 30000
+    request_timeout_ms: int  = 60000
+    retry_topic_suffix: str  = ".retry"
+    dlq_topic_suffix:   str  = ".dlq"
+    num_partitions:     int  = 3
+    replication_factor: int  = 1
+
+
+@dataclass
+class DistributedCrawlerConfig:
+    """
+    Configuration for the distributed crawler cluster.
+
+    === THEORY ===
+
+    A distributed crawler uses a URL frontier (priority queue of URLs to
+    fetch) shared across multiple worker processes.  A coordinator assigns
+    work, enforces politeness (per-domain rate limits), and tracks state.
+
+    Key challenges:
+      - URL deduplication (don't crawl the same URL twice)
+      - Politeness (respect robots.txt + per-host rate limits)
+      - Fault tolerance (reassign work if a worker dies)
+      - Priority (crawl important pages first)
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google:     Googlebot with distributed scheduler
+      Bing:       MSNBot with URL frontier service
+      CommonCrawl: Nutch/Heritrix-based distributed crawlers
+    """
+    max_workers:          int   = 4
+    frontier_max_size:    int   = 100000
+    batch_size:           int   = 10
+    worker_timeout_sec:   float = 300.0
+    dedup_backend:        str   = "memory"
+    rate_limit_per_domain: float = 1.0
+    max_retries:          int   = 2
+    checkpoint_interval:  int   = 100
+
+
+@dataclass
+class DistributedIndexingConfig:
+    """
+    Configuration for distributed indexing workers.
+
+    === THEORY ===
+
+    Distributed indexing separates document processing into independent
+    stages (chunking, embedding, indexing) that run as event-driven workers.
+    Each stage consumes events from the bus and produces events for the
+    next stage, forming a processing pipeline.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Elasticsearch: Index sharding across nodes
+      Google:        MapReduce indexing pipeline
+      Vespa:         Content nodes with document processors
+    """
+    num_indexing_workers:  int  = 2
+    num_embedding_workers: int  = 2
+    batch_size:            int  = 10
+    embedding_batch_size:  int  = 32
+    worker_timeout_sec:    float = 120.0
+    auto_embed:            bool = True
+    retry_on_failure:      bool = True
+    max_retries:           int  = 3
+
+
+@dataclass
+class QdrantConfig:
+    """
+    Qdrant vector database connection settings.
+
+    Qdrant is used as the distributed vector store, replacing or
+    augmenting the local FAISS index for production deployments.
+    Falls back to FAISS when Qdrant is unavailable.
+
+    === THEORY ===
+
+    Qdrant uses HNSW (Hierarchical Navigable Small World) graphs for
+    approximate nearest neighbour search.  Unlike FAISS IndexFlatIP
+    (exact, O(N·D)), HNSW achieves O(log N) query time with tunable
+    recall via ef_construct and m parameters.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Pinecone:   Managed vector DB
+      Weaviate:   Open-source vector DB with hybrid search
+      Milvus:     Open-source vector DB with IVF + HNSW
+      Vespa:      Hybrid search with ANN built-in
+    """
+    host:             str  = "localhost"
+    port:             int  = 6333
+    grpc_port:        int  = 6334
+    collection_name:  str  = "search_engine"
+    prefer_grpc:      bool = False
+    api_key:          str  = ""
+    vector_size:      int  = 384
+    distance:         str  = "Cosine"
+    on_disk:          bool = False
+    hnsw_m:           int  = 16
+    hnsw_ef_construct: int = 100
+
+
+@dataclass
+class GatewayConfig:
+    """
+    Retrieval gateway settings.
+
+    The gateway sits between clients and retrieval backends, handling
+    query routing, caching, rate limiting, and result fusion.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google:     GFE (Google Front End) + serving infrastructure
+      Netflix:    Zuul API gateway
+      Uber:       Edge gateway with request routing
+      Elastic:    Coordinating nodes in Elasticsearch
+    """
+    cache_ttl:          int   = 300
+    cache_max_size:     int   = 1000
+    rate_limit_rpm:     int   = 120
+    timeout_sec:        float = 30.0
+    max_concurrent:     int   = 50
+    enable_cache:       bool  = True
+    default_fusion:     str   = "rrf"
+    default_rerank:     bool  = True
+
+
+# ── Phase 8 Batch 3 configs ────────────────────────────────────────────────────
+
+@dataclass
+class ServiceRegistryConfig:
+    """
+    Microservice registry and discovery configuration.
+
+    === THEORY ===
+
+    Service discovery enables services to find each other without hardcoded
+    addresses.  The registry tracks service instances, health status, and
+    metadata.  Clients query the registry to route requests.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Netflix:    Eureka
+      Kubernetes: kube-dns + Service resources
+      Consul:     HashiCorp Consul
+      Uber:       Hyperbahn (TChannel service mesh)
+    """
+    enabled:             bool  = True
+    heartbeat_interval:  float = 10.0
+    health_check_interval: float = 15.0
+    stale_threshold_sec: float = 30.0
+    max_instances:       int   = 100
+
+
+@dataclass
+class AgentExecutionConfig:
+    """
+    Distributed agent execution infrastructure.
+
+    Controls the agent worker pool, task queue, and scheduling.
+
+    === THEORY ===
+
+    Distributed agent execution separates task submission from execution.
+    Tasks are enqueued in a priority queue and dispatched to a pool of
+    workers.  This enables horizontal scaling: add workers to increase
+    agent throughput without changing the submission interface.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Celery:     Distributed task queue with worker pools
+      Ray:        Distributed computing framework with actors
+      Temporal:   Durable workflow + activity workers
+      OpenAI:     Internal agent execution cluster
+    """
+    max_workers:        int   = 8
+    max_queue_size:     int   = 1000
+    default_priority:   int   = 5
+    worker_timeout_sec: float = 120.0
+    max_retries:        int   = 3
+    scheduling_strategy: str  = "priority"
+    enable_preemption:  bool  = False
+    checkpoint_interval: int  = 10
+
+
+@dataclass
+class DistributedWorkflowConfig:
+    """
+    Distributed workflow execution engine configuration.
+
+    === THEORY ===
+
+    Distributed workflows extend the Phase 7 WorkflowEngine with:
+      - State persistence (survives crashes)
+      - Checkpointing (resume from last successful step)
+      - Distributed step execution (steps run on different workers)
+      - Scheduling (cron-like or event-triggered workflows)
+      - Execution tracking (audit trail of all step executions)
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Temporal:   Durable workflow execution
+      Airflow:    DAG-based workflow scheduling
+      Prefect:    Flow orchestration with state management
+      Step Functions: AWS state machine execution
+    """
+    max_concurrent_workflows: int   = 20
+    checkpoint_enabled:       bool  = True
+    checkpoint_backend:       str   = "memory"
+    max_step_retries:         int   = 3
+    step_timeout_sec:         float = 300.0
+    schedule_enabled:         bool  = False
+    execution_ttl_hours:      int   = 24
+    state_backend:            str   = "memory"
+
+
+@dataclass
+class TenancyConfig:
+    """
+    Multi-tenancy configuration.
+
+    === THEORY ===
+
+    Multi-tenancy allows a single platform instance to serve multiple
+    isolated customers (tenants).  Each tenant has:
+      - Isolated data (documents, indexes, embeddings)
+      - Isolated memory (conversations, sessions)
+      - Isolated agents (workflows, research sessions)
+      - Independent rate limits and quotas
+      - Separate analytics and audit trails
+
+    Isolation strategies:
+      - Logical: shared DB with tenant_id column (this implementation)
+      - Physical: separate DB/schemas per tenant (future)
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Elastic Cloud:  cluster-per-tenant or index-per-tenant
+      Salesforce:     shared schema with org_id partitioning
+      OpenAI:         organization-level isolation
+      Slack:          workspace-level data isolation
+    """
+    enabled:              bool  = False
+    default_tenant:       str   = "default"
+    max_tenants:          int   = 100
+    isolation_level:      str   = "logical"
+    max_docs_per_tenant:  int   = 100000
+    max_sessions_per_tenant: int = 1000
+    max_agents_per_tenant: int  = 50
+    enable_billing_hooks: bool  = False
+
+
 # ── Top-level config ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -418,3 +802,18 @@ class EngineConfig:
     rag:                  RAGConfig                 = field(default_factory=RAGConfig)
     # Phase 7
     research:             ResearchConfig            = field(default_factory=ResearchConfig)
+    # Phase 8
+    postgres:             PostgresConfig            = field(default_factory=PostgresConfig)
+    events:               EventConfig               = field(default_factory=EventConfig)
+    redis:                RedisConfig               = field(default_factory=RedisConfig)
+    # Phase 8 Batch 2
+    kafka:                KafkaConfig               = field(default_factory=KafkaConfig)
+    distributed_crawler:  DistributedCrawlerConfig  = field(default_factory=DistributedCrawlerConfig)
+    distributed_indexing: DistributedIndexingConfig  = field(default_factory=DistributedIndexingConfig)
+    qdrant:               QdrantConfig              = field(default_factory=QdrantConfig)
+    gateway:              GatewayConfig             = field(default_factory=GatewayConfig)
+    # Phase 8 Batch 3
+    service_registry:     ServiceRegistryConfig     = field(default_factory=ServiceRegistryConfig)
+    agent_execution:      AgentExecutionConfig      = field(default_factory=AgentExecutionConfig)
+    distributed_workflow: DistributedWorkflowConfig = field(default_factory=DistributedWorkflowConfig)
+    tenancy:              TenancyConfig             = field(default_factory=TenancyConfig)
