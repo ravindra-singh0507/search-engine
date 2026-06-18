@@ -2279,4 +2279,38 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
     ):
         return {"logs": struct_logger.get_recent(limit=limit, level=level)}
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PHASE 8 BATCH 5 — Performance Optimization
+    # ══════════════════════════════════════════════════════════════════════════
+
+    from app.performance.cache_layer import DistributedCacheLayer
+    from app.performance.optimizer import PerformanceOptimizer
+
+    perf_cache     = DistributedCacheLayer(redis_client=redis_client)
+    perf_optimizer = PerformanceOptimizer()
+
+    # ── GET /performance/cache/stats ─────────────────────────────────────────
+
+    @app.get("/performance/cache/stats",
+             summary="Distributed cache statistics", tags=["Performance"])
+    def perf_cache_stats():
+        return perf_cache.stats()
+
+    # ── GET /performance/profiling ───────────────────────────────────────────
+
+    @app.get("/performance/profiling",
+             summary="Performance profiling summary", tags=["Performance"])
+    def perf_profiling():
+        return perf_optimizer.summary()
+
+    # ── GET /performance/profiling/history ────────────────────────────────────
+
+    @app.get("/performance/profiling/history",
+             summary="Recent profiling results", tags=["Performance"])
+    def perf_history(
+        name:  str = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=100),
+    ):
+        return {"history": perf_optimizer.get_history(name=name, limit=limit)}
+
     return app
