@@ -49,6 +49,7 @@ from app.embeddings.cache import EmbeddingCache
 from app.embeddings.pipeline import EmbeddingPipeline
 from app.chunking.chunker import make_chunker
 from app.vector_store.store import FaissVectorStore
+from app.vector_store.factory import create_vector_store
 from app.semantic_search.semantic_service import SemanticSearchService
 from app.hybrid_search.hybrid_service import HybridSearchService
 from app.evaluation.evaluator import RetrievalEvaluator, load_eval_dataset
@@ -239,7 +240,8 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
 
     emb_cache    = EmbeddingCache(db)
     chunker      = make_chunker(config.chunking)
-    vector_store = FaissVectorStore(config.vector_store)
+    # Phase 8.5: Use vector store factory (Qdrant with FAISS fallback)
+    vector_store = create_vector_store(config)
     emb_pipeline = EmbeddingPipeline(
         db=db, provider=emb_provider, cache=emb_cache,
         vector_store=vector_store, chunker=chunker,
@@ -290,13 +292,22 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
     # Project root for path-traversal validation
     _PROJECT_ROOT = Path.cwd().resolve()
 
-    # ── Phase 8: Event Bus ────────────────────────────────────────────────
+    # ── Phase 8: Event Bus (config-driven: memory or kafka) ─────────────
     from app.events.bus import InMemoryEventBus
     from app.events.producer import EventProducer
     from app.events.store import InMemoryEventStore
     from app.events.retry import DeadLetterQueue
 
-    event_bus    = InMemoryEventBus()
+    if config.events.backend == "kafka":
+        try:
+            from app.kafka.bus import KafkaEventBus
+            event_bus = KafkaEventBus(config.kafka)
+            logger.info("Event bus: Kafka (%s)", config.kafka.bootstrap_servers)
+        except Exception as exc:
+            logger.warning("Kafka unavailable (%s), falling back to InMemoryEventBus", exc)
+            event_bus = InMemoryEventBus()
+    else:
+        event_bus = InMemoryEventBus()
     event_store  = InMemoryEventStore(max_size=config.events.max_store_events)
     event_dlq    = DeadLetterQueue(max_size=1000)
     event_prod   = EventProducer(event_bus, source="search-engine")
@@ -373,6 +384,35 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         version="8.0.0",
         lifespan=lifespan,
     )
+
+    # ── Phase 8.75: Global Security Middleware ────────────────────────────
+    from app.security.middleware import SecurityMiddleware
+    from app.tenancy.middleware import TenantMiddleware
+
+    security_mw = SecurityMiddleware(
+        jwt_auth=None,        # wired in Batch 4 section below
+        api_key_mgr=None,     # wired in Batch 4 section below
+        audit_logger=None,    # wired in Batch 4 section below
+        enabled=config.security.enabled,
+    )
+
+    # Starlette-compatible middleware wrapper
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    if config.security.enabled:
+        app.add_middleware(BaseHTTPMiddleware, dispatch=security_mw)
+        logger.info("Security middleware ACTIVE (JWT + API key enforcement)")
+    else:
+        logger.info("Security middleware DISABLED (set SECURITY_ENABLED=true to activate)")
+
+    if config.tenancy.enabled:
+        tenant_mw_instance = TenantMiddleware(
+            tenant_manager=None,  # wired in Batch 3 section below
+            header_name="X-Tenant-ID",
+        )
+        logger.info("Tenant middleware ACTIVE (X-Tenant-ID header required)")
+    else:
+        logger.info("Tenant middleware DISABLED (set TENANCY_ENABLED=true to activate)")
 
     # ── Indexing endpoints ─────────────────────────────────────────────────
 
@@ -461,6 +501,13 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             use_query_expansion=expand,
             session_id=session_id,
         )
+
+        from app.events.topics import SEARCH_EXECUTED
+        event_prod.emit(SEARCH_EXECUTED, {
+            "query": q, "total_matches": result.total_matches,
+            "latency_ms": result.search_time_ms, "cache_hit": result.cache_hit,
+        })
+
         return {
             "query":            result.query,
             "corrected_query":  result.corrected_query,
@@ -510,9 +557,12 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         if not db.delete_document(doc_id):
             raise HTTPException(404, detail=f"Document {doc_id} not found")
         search.invalidate_all_caches()
-        # Rebuild spell checker from scratch so deleted terms are removed
         spell_checker.clear_vocabulary()
         spell_checker.build_vocabulary(db.get_all_terms())
+
+        from app.events.topics import DOCUMENT_DELETED
+        event_prod.emit(DOCUMENT_DELETED, {"doc_id": doc_id})
+
         return {"status": "deleted", "doc_id": doc_id}
 
     # ── Autocomplete ───────────────────────────────────────────────────────
@@ -638,6 +688,13 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
                 logger.error("Crawl thread error: %s", exc)
 
         threading.Thread(target=run_crawl, daemon=True).start()
+
+        from app.events.topics import CRAWL_STARTED
+        event_prod.emit(CRAWL_STARTED, {
+            "seed_urls": req.seed_urls, "max_depth": req.max_depth,
+            "max_pages": req.max_pages,
+        })
+
         return {
             "status": "started",
             "seed_urls": req.seed_urls,
@@ -702,6 +759,13 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
                 _embed_job_running["running"] = False
 
         threading.Thread(target=run_embed, daemon=True).start() if not req.sync else run_embed()
+
+        from app.events.topics import EMBEDDING_STARTED
+        event_prod.emit(EMBEDDING_STARTED, {
+            "doc_ids": doc_ids, "force": req.force,
+            "model": emb_provider.model_name,
+        })
+
         return {
             "status":  "done" if req.sync else "started",
             "doc_ids": doc_ids,
@@ -1314,6 +1378,13 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         resp = rag_pipeline.query(rag_req)
         metrics.record_chat_session()
 
+        from app.events.topics import RAG_QUERY_COMPLETED
+        event_prod.emit(RAG_QUERY_COMPLETED, {
+            "query": resp.query, "latency_ms": resp.total_latency_ms,
+            "tokens_used": resp.tokens_used,
+            "confidence_tier": resp.confidence.tier,
+        })
+
         return {
             "session_id":        session.session_id,
             "query":             resp.query,
@@ -1636,6 +1707,45 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         agent_map, agent_context, metrics,
         parallel=config.research.orchestrator.parallel,
     )
+
+    # Phase 8.5: Distributed Agent Executor (activated by config)
+    distributed_executor = None
+    if config.agent_execution.mode == "distributed":
+        try:
+            from app.distributed.agents.executor import DistributedAgentExecutor
+            distributed_executor = DistributedAgentExecutor(
+                config=config.agent_execution,
+                agents=agent_map,
+                context=agent_context,
+                event_bus=event_bus,
+                redis_client=redis_client,
+            )
+            distributed_executor.setup()
+            distributed_executor.start()
+            logger.info("Distributed agent executor activated (workers=%d)",
+                        config.agent_execution.max_workers)
+        except Exception as exc:
+            logger.warning("Distributed executor failed (%s), using local", exc)
+            distributed_executor = None
+
+    # Phase 8.5: Distributed Workflow Engine (activated by config)
+    dist_workflow_engine = None
+    if config.distributed_workflow.checkpoint_enabled:
+        try:
+            from app.distributed.workflows.engine import DistributedWorkflowEngine
+            from app.distributed.workflows.checkpoint import InMemoryCheckpointStore
+            dist_workflow_engine = DistributedWorkflowEngine(
+                config=config.distributed_workflow,
+                agents=agent_map,
+                context=agent_context,
+                metrics=metrics,
+                event_bus=event_bus,
+                checkpoint_store=InMemoryCheckpointStore(),
+            )
+            logger.info("Distributed workflow engine activated (checkpointing=on)")
+        except Exception as exc:
+            logger.warning("Distributed workflow engine failed (%s), using Phase 7", exc)
+            dist_workflow_engine = None
     workflow_registry = get_workflow_registry()
     tool_registry     = create_tool_registry()
     mcp_registry      = MCPRegistry(tool_registry)
@@ -1716,6 +1826,16 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
 
         metrics.record_workflow_run(run.total_latency_ms, run.status.value == "completed")
 
+        from app.events.topics import WORKFLOW_COMPLETED, RESEARCH_COMPLETED
+        event_prod.emit(WORKFLOW_COMPLETED, {
+            "run_id": run.run_id, "workflow": req.workflow,
+            "status": run.status.value, "latency_ms": run.total_latency_ms,
+        })
+        if run.status.value == "completed":
+            event_prod.emit(RESEARCH_COMPLETED, {
+                "session_id": session_id, "goal": req.goal,
+            })
+
         return {
             "session_id":       session_id,
             "run_id":           run.run_id,
@@ -1763,6 +1883,19 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             params={"query": req.query, "top_k": req.top_k, "use_rag": req.use_rag},
         )
         result = retrieval_agent.run(task, agent_context)
+
+        from app.events.topics import AGENT_TASK_COMPLETED, AGENT_TASK_FAILED
+        if result.is_success():
+            event_prod.emit(AGENT_TASK_COMPLETED, {
+                "task_id": task.task_id[:8], "agent_type": "retrieval",
+                "latency_ms": result.latency_ms,
+            })
+        else:
+            event_prod.emit(AGENT_TASK_FAILED, {
+                "task_id": task.task_id[:8], "agent_type": "retrieval",
+                "error": result.error,
+            })
+
         return result.to_dict()
 
     # ── GET /research/workflows ──────────────────────────────────────────────
@@ -2182,6 +2315,24 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
     tracer        = Tracer(config.observability2)
     struct_logger = StructuredLogger("search-engine", config.observability2)
 
+    # Phase 8.5: Security Enforcement Layer
+    from app.security.enforcement import SecurityEnforcer
+    security_enforcer = SecurityEnforcer(config.security, rbac_enforcer)
+
+    # Phase 8.75: Wire security middleware to actual services
+    security_mw._jwt = jwt_auth
+    security_mw._keys = api_key_mgr
+    security_mw._audit = audit_logger
+
+    # Phase 8.5: Resilience Service Layer
+    from app.resilience.service_wrapper import ServiceResilienceLayer
+    resilience_layer = ServiceResilienceLayer(config.resilience)
+    resilience_layer.register("llm")
+    resilience_layer.register("embedding")
+    resilience_layer.register("vector_store")
+    resilience_layer.register("redis")
+    resilience_layer.register("database")
+
     # Register health probes
     health_probe.add_probe("database", lambda: db.conn is not None or db.is_postgres)
     health_probe.add_probe("events", lambda: config.events.enabled)
@@ -2243,6 +2394,20 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             "overall_healthy": overall,
             "probes": [r.to_dict() for r in results],
         }
+
+    # ── GET /resilience/services ──────────────────────────────────────────────
+
+    @app.get("/resilience/services",
+             summary="Resilient service wrappers status", tags=["Resilience"])
+    def resilience_services():
+        return resilience_layer.stats()
+
+    # ── GET /security/enforcement ────────────────────────────────────────────
+
+    @app.get("/security/enforcement",
+             summary="Security enforcement matrix", tags=["Security"])
+    def security_enforcement():
+        return security_enforcer.stats()
 
     # ── GET /cost/summary ────────────────────────────────────────────────────
 

@@ -1,10 +1,19 @@
 """
-Search Engine — Main Entry Point (Phase 8)
+Search Engine — Main Entry Point (Phase 8.5)
 
 Run with: python main.py
 API docs: http://localhost:8000/docs
 
 Docker:   docker-compose up
+
+Environment variables for distributed mode:
+  DATABASE_BACKEND=postgres      # sqlite (default) or postgres
+  EVENT_BACKEND=kafka            # memory (default) or kafka
+  VECTOR_BACKEND=qdrant          # faiss (default) or qdrant
+  CRAWLER_MODE=distributed       # single (default) or distributed
+  AGENT_MODE=distributed         # local (default) or distributed
+  SECURITY_ENABLED=true          # false (default) or true
+  TENANCY_ENABLED=true           # false (default) or true
 """
 
 import logging
@@ -17,6 +26,8 @@ import uvicorn
 from app.api.routes import create_app
 from app.config import (
     EngineConfig, DatabaseConfig, PostgresConfig, RedisConfig, EventConfig,
+    CrawlerConfig, VectorStoreConfig, AgentExecutionConfig,
+    SecurityConfig, TenancyConfig, KafkaConfig,
 )
 
 logging.basicConfig(
@@ -50,6 +61,24 @@ config = EngineConfig(
         host=os.environ.get("REDIS_HOST", "localhost"),
         port=int(os.environ.get("REDIS_PORT", "6379")),
         password=os.environ.get("REDIS_PASSWORD", ""),
+    ),
+    kafka=KafkaConfig(
+        bootstrap_servers=os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+    ),
+    vector_store=VectorStoreConfig(
+        backend=os.environ.get("VECTOR_BACKEND", "faiss"),
+    ),
+    crawler=CrawlerConfig(
+        mode=os.environ.get("CRAWLER_MODE", "single"),
+    ),
+    agent_execution=AgentExecutionConfig(
+        mode=os.environ.get("AGENT_MODE", "local"),
+    ),
+    security=SecurityConfig(
+        enabled=os.environ.get("SECURITY_ENABLED", "false").lower() == "true",
+    ),
+    tenancy=TenancyConfig(
+        enabled=os.environ.get("TENANCY_ENABLED", "false").lower() == "true",
     ),
 )
 

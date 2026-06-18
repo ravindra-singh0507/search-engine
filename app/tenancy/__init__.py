@@ -45,18 +45,24 @@ Our implementation uses logical isolation (strategy 1) with:
 """
 
 from app.tenancy.models import Tenant, TenantQuotas, TenantUsage
-from app.tenancy.context import TenantContext, tenant_scope
 from app.tenancy.manager import TenantManager
+from app.tenancy.context import TenantContext, tenant_scope
 from app.tenancy.isolation import TenantIsolation
 from app.tenancy.middleware import TenantMiddleware
+from app.tenancy.data_access import TenantAwareDatabase
+from app.tenancy.vector_namespace import TenantVectorNamespace
+from app.tenancy.cache_scope import TenantCacheScope
 
 __all__ = [
     "Tenant",
     "TenantQuotas",
     "TenantUsage",
+    "TenantManager",
     "TenantContext",
     "tenant_scope",
-    "TenantManager",
     "TenantIsolation",
     "TenantMiddleware",
+    "TenantAwareDatabase",
+    "TenantVectorNamespace",
+    "TenantCacheScope",
 ]

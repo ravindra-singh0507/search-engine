@@ -52,27 +52,33 @@ def create_vector_store(config: EngineConfig) -> VectorStore:
     """
     # Attempt Qdrant if the config looks intentional (non-default host or
     # explicit collection name change)
+    # Only attempt Qdrant if explicitly configured via vector_store.backend
     qdrant_cfg = config.qdrant
-    try:
-        from app.vector_store.qdrant import QdrantVectorStore
+    if config.vector_store.backend == "qdrant":
+        try:
+            from app.vector_store.qdrant import QdrantVectorStore
+            import socket
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(3)
+            try:
+                store = QdrantVectorStore(config=qdrant_cfg)
+                store.create_collection()
+                logger.info(
+                    "Vector store: Qdrant (%s:%d, collection=%s)",
+                    qdrant_cfg.host, qdrant_cfg.port, qdrant_cfg.collection_name,
+                )
+                return store
+            finally:
+                socket.setdefaulttimeout(old_timeout)
 
-        store = QdrantVectorStore(config=qdrant_cfg)
-        # Verify connectivity by triggering lazy connection + collection check
-        store.create_collection()
-        logger.info(
-            "Vector store: Qdrant (%s:%d, collection=%s)",
-            qdrant_cfg.host, qdrant_cfg.port, qdrant_cfg.collection_name,
-        )
-        return store
-
-    except ImportError:
-        logger.info(
-            "qdrant-client not installed — falling back to FAISS"
-        )
-    except Exception as exc:
-        logger.warning(
-            "Qdrant unavailable (%s) — falling back to FAISS", exc,
-        )
+        except ImportError:
+            logger.info(
+                "qdrant-client not installed — falling back to FAISS"
+            )
+        except Exception as exc:
+            logger.warning(
+                "Qdrant unavailable (%s) — falling back to FAISS", exc,
+            )
 
     # Fallback: FAISS
     store = FaissVectorStore(config=config.vector_store)
