@@ -49,6 +49,7 @@ class CrawlerConfig:
     timeout: int = 10
     user_agent: str = "SearchEngineBot/1.0"
     respect_robots_txt: bool = True
+    mode: str = "single"
 
 
 @dataclass
@@ -120,6 +121,7 @@ class VectorStoreConfig:
     index_path: Path = Path("data/faiss_index")
     dimension: int   = 384
     similarity: str  = "cosine"
+    backend:   str   = "faiss"
 
 
 @dataclass
@@ -696,6 +698,7 @@ class AgentExecutionConfig:
     worker_timeout_sec: float = 120.0
     max_retries:        int   = 3
     scheduling_strategy: str  = "priority"
+    mode:               str   = "local"
     enable_preemption:  bool  = False
     checkpoint_interval: int  = 10
 

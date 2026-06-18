@@ -15,21 +15,20 @@ __pycache__/
 dist/
 build/
 pip-wheel-metadata/
-
-# Installer / wheel
 pip-log.txt
 
 # Editor directories and files
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 .DS_Store
 
 # Pytest / test caches
 .pytest_cache/
-
-# Type checker / caches
 .mypy_cache/
+.ruff_cache/
 
 # Coverage reports
 .coverage
@@ -40,20 +39,26 @@ coverage.xml
 # Runtime DB / data
 data/*.db
 data/*.sqlite
-*.sqlite
-*.db
-*.db-wal
-*.db-shm
-*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/*.log
+data/benchmark_report.json
+data/costs.jsonl
+data/audit.log
+data/faiss_index/
 
 # Environment / secrets
 .env
 .env.*
+.env.local
+.env.production
 
 # Node / frontend
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 
 # Logs
 *.log
@@ -63,8 +68,21 @@ logs/
 # OS files
 Thumbs.db
 desktop.ini
+.DS_Store
+
+# Docker
+docker/data/
+
+# Kubernetes secrets (real values)
+k8s/secrets-production.yml
+
+# Load test results
+load_tests/__pycache__/
+load_tests/results/
 
 # Misc caches
 .cache/
+.claude/
 
+# Project handoff
 HANDOFF.md
