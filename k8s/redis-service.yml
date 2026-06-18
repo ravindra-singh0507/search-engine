@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: search-engine
+  labels:
+    app: search-engine
+    component: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: search-engine
+    component: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
