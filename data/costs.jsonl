@@ -1,0 +1,2 @@
+{"event_id": "2504276c-763d-4678-82a9-9c7f21de9a70", "category": "LLM_INPUT", "cost_usd": 0.0006666666666666666, "units": 100.0, "unit_type": "tokens", "provider": "openai", "model": "gpt-4o", "tenant_id": "", "session_id": "", "metadata": {}, "timestamp": 1781773431.4211116}
+{"event_id": "fa092992-7c30-44ef-b0bc-1f88abfcaa27", "category": "LLM_OUTPUT", "cost_usd": 0.0003333333333333333, "units": 50.0, "unit_type": "tokens", "provider": "openai", "model": "gpt-4o", "tenant_id": "", "session_id": "", "metadata": {}, "timestamp": 1781773431.4211116}

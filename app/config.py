@@ -767,6 +767,144 @@ class TenancyConfig:
     enable_billing_hooks: bool  = False
 
 
+# ── Phase 8 Batch 4 configs ────────────────────────────────────────────────────
+
+@dataclass
+class SecurityConfig:
+    """
+    Security platform configuration: JWT, API keys, RBAC, audit logging.
+
+    === THEORY ===
+
+    Defense-in-depth security layers:
+      1. Authentication: verify who the caller is (JWT / API key)
+      2. Authorization: verify what they can do (RBAC)
+      3. Audit logging: record what they did (immutable log)
+      4. Secrets management: keep credentials out of code
+
+    JWT (RFC 7519) encodes claims in a signed token.  The server verifies
+    the signature — no DB lookup needed (stateless auth).  API keys are
+    simpler for machine-to-machine use.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google: IAM + service accounts
+      AWS:    IAM policies + Cognito
+      Netflix: ZUUL gateway with JWT validation
+      OpenAI: Organization-level API keys + scopes
+    """
+    enabled:             bool  = False
+    jwt_secret_env:      str   = "JWT_SECRET"
+    jwt_algorithm:       str   = "HS256"
+    jwt_expiry_hours:    int   = 24
+    api_key_header:      str   = "X-API-Key"
+    audit_log_enabled:   bool  = True
+    audit_log_path:      str   = "data/audit.log"
+    bcrypt_rounds:       int   = 12
+    max_api_keys:        int   = 10
+
+
+@dataclass
+class ObservabilityConfig2:
+    """
+    Extended observability: OpenTelemetry tracing, structured logging, dashboards.
+
+    Extends the existing ObservabilityConfig (Phase 3) with distributed
+    tracing and log aggregation.
+
+    === THEORY ===
+
+    The three pillars of observability:
+      1. Metrics: numerical measurements over time (existing, Phase 3)
+      2. Traces: distributed request flow across services (new, Phase 8)
+      3. Logs: structured event records (extended, Phase 8)
+
+    OpenTelemetry (OTLP) is the open standard for all three, supported
+    by Jaeger, Zipkin, Grafana Tempo, AWS X-Ray, and Datadog.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Google:    Cloud Trace + Cloud Logging
+      Netflix:   Atlas (metrics) + Edgar (traces)
+      Uber:      Jaeger (created at Uber)
+      Elastic:   APM with distributed tracing
+    """
+    tracing_enabled:     bool  = False
+    otlp_endpoint:       str   = "http://localhost:4317"
+    service_name:        str   = "search-engine"
+    log_format:          str   = "json"
+    log_level:           str   = "INFO"
+    slow_query_ms:       float = 200.0
+    trace_sample_rate:   float = 1.0
+
+
+@dataclass
+class ResilienceConfig:
+    """
+    Resilience patterns: circuit breakers, retries, backoff, health probes.
+
+    === THEORY ===
+
+    Resilience engineering prevents cascading failures in distributed systems.
+
+    Circuit Breaker (Michael Nygard, "Release It!"):
+      CLOSED → OPEN → HALF_OPEN → CLOSED
+      Trips when failure rate exceeds threshold. Fast-fails while open.
+      Tries one probe request in HALF_OPEN to check recovery.
+
+    Retry with backoff prevents thundering herd when a service recovers.
+    Jitter adds randomness to avoid synchronized retries.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      Netflix: Hystrix (circuit breaker — now Resilience4j)
+      AWS:     SDK built-in retry + backoff
+      Google:  gRPC deadline propagation + circuit breakers
+    """
+    circuit_breaker_enabled:   bool  = True
+    failure_threshold:         int   = 5
+    recovery_timeout_sec:      float = 30.0
+    half_open_max_calls:       int   = 3
+    retry_max_attempts:        int   = 3
+    retry_base_delay_sec:      float = 0.5
+    retry_max_delay_sec:       float = 30.0
+    retry_jitter:              bool  = True
+    health_probe_interval_sec: float = 15.0
+    graceful_shutdown_sec:     float = 30.0
+
+
+@dataclass
+class CostConfig:
+    """
+    Cost observability: track LLM, embedding, storage, and agent costs.
+
+    === THEORY ===
+
+    AI systems have significant variable costs tied to usage:
+      - LLM calls: priced per token (input + output)
+      - Embeddings: priced per token
+      - Vector storage: priced per GB/month
+      - Agent execution: priced by compute time
+
+    Cost tracking enables budgeting, alerting, and per-tenant billing.
+
+    === PRODUCTION EQUIVALENTS ===
+
+      OpenAI:  Usage dashboard + billing API
+      AWS:     Cost Explorer + budgets
+      GCP:     Cloud Billing + budget alerts
+      Datadog: Cost Management
+    """
+    enabled:            bool  = True
+    track_llm:          bool  = True
+    track_embeddings:   bool  = True
+    track_storage:      bool  = True
+    track_agents:       bool  = True
+    budget_alert_usd:   float = 10.0
+    cost_log_path:      str   = "data/costs.jsonl"
+    retention_days:     int   = 90
+
+
 # ── Top-level config ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -817,3 +955,8 @@ class EngineConfig:
     agent_execution:      AgentExecutionConfig      = field(default_factory=AgentExecutionConfig)
     distributed_workflow: DistributedWorkflowConfig = field(default_factory=DistributedWorkflowConfig)
     tenancy:              TenancyConfig             = field(default_factory=TenancyConfig)
+    # Phase 8 Batch 4
+    security:             SecurityConfig            = field(default_factory=SecurityConfig)
+    observability2:       ObservabilityConfig2      = field(default_factory=ObservabilityConfig2)
+    resilience:           ResilienceConfig          = field(default_factory=ResilienceConfig)
+    cost:                 CostConfig                = field(default_factory=CostConfig)

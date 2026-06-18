@@ -213,6 +213,24 @@ class MetricsCollector:
         self.synthesis_latency        = Histogram("synthesis_latency_ms",   agent_buckets)
         self.workflow_latency         = Histogram("workflow_latency_ms",    workflow_buckets)
 
+        # Phase 8 Batch 4 counters — observability & resilience
+        self.trace_spans_total        = Counter("trace_spans_total")
+        self.trace_errors_total       = Counter("trace_errors_total")
+        self.circuit_breaker_trips    = Counter("circuit_breaker_trips_total")
+        self.circuit_breaker_rejects  = Counter("circuit_breaker_rejects_total")
+        self.retry_attempts_total     = Counter("retry_attempts_total")
+        self.retry_successes_total    = Counter("retry_successes_total")
+        self.retry_exhausted_total    = Counter("retry_exhausted_total")
+        self.health_probe_checks      = Counter("health_probe_checks_total")
+        self.health_probe_failures    = Counter("health_probe_failures_total")
+        self.graceful_shutdown_events = Counter("graceful_shutdown_events_total")
+        self.log_lines_total          = Counter("log_lines_total")
+
+        # Phase 8 Batch 4 histograms
+        probe_buckets = (1, 5, 10, 25, 50, 100, 500, 1000, 5000)
+        self.health_probe_latency     = Histogram("health_probe_latency_ms", probe_buckets)
+        self.span_duration            = Histogram("trace_span_duration_ms",  agent_buckets)
+
         self._start_time = time.time()
 
     # ── Record helpers ─────────────────────────────────────────────────────
@@ -341,6 +359,38 @@ class MetricsCollector:
     def record_research_session(self) -> None:
         self.research_sessions_ctr.inc()
 
+    # Phase 8 Batch 4 record helpers
+    def record_trace_span(self, duration_ms: float, error: bool = False) -> None:
+        self.trace_spans_total.inc()
+        self.span_duration.observe(duration_ms)
+        if error:
+            self.trace_errors_total.inc()
+
+    def record_circuit_breaker_trip(self) -> None:
+        self.circuit_breaker_trips.inc()
+
+    def record_circuit_breaker_reject(self) -> None:
+        self.circuit_breaker_rejects.inc()
+
+    def record_retry_attempt(self, success: bool = True, exhausted: bool = False) -> None:
+        self.retry_attempts_total.inc()
+        if success:
+            self.retry_successes_total.inc()
+        if exhausted:
+            self.retry_exhausted_total.inc()
+
+    def record_health_probe(self, latency_ms: float, healthy: bool = True) -> None:
+        self.health_probe_checks.inc()
+        self.health_probe_latency.observe(latency_ms)
+        if not healthy:
+            self.health_probe_failures.inc()
+
+    def record_graceful_shutdown(self) -> None:
+        self.graceful_shutdown_events.inc()
+
+    def record_log_line(self) -> None:
+        self.log_lines_total.inc()
+
     # ── Reporting ─────────────────────────────────────────────────────────
 
     def to_prometheus_text(self) -> str:
@@ -367,6 +417,12 @@ class MetricsCollector:
             self.agent_executions, self.agent_successes, self.agent_failures,
             self.workflow_runs, self.workflow_completions, self.workflow_failures_ctr,
             self.planner_invocations, self.research_sessions_ctr,
+            # Phase 8 Batch 4
+            self.trace_spans_total, self.trace_errors_total,
+            self.circuit_breaker_trips, self.circuit_breaker_rejects,
+            self.retry_attempts_total, self.retry_successes_total, self.retry_exhausted_total,
+            self.health_probe_checks, self.health_probe_failures,
+            self.graceful_shutdown_events, self.log_lines_total,
         ]:
             lines += metric.to_prometheus()
 
@@ -388,6 +444,8 @@ class MetricsCollector:
             self.retrieval_agent_latency, self.critic_latency,
             self.citval_latency, self.synthesis_latency,
             self.workflow_latency,
+            # Phase 8 Batch 4
+            self.health_probe_latency, self.span_duration,
         ]:
             lines += hist.to_prometheus()
 
@@ -432,4 +490,18 @@ class MetricsCollector:
             "workflow_runs_total":      self.workflow_runs.value,
             "agent_latency":            self.agent_latency.snapshot(),
             "workflow_latency":         self.workflow_latency.snapshot(),
+            # Phase 8 Batch 4
+            "trace_spans_total":           self.trace_spans_total.value,
+            "trace_errors_total":          self.trace_errors_total.value,
+            "circuit_breaker_trips":       self.circuit_breaker_trips.value,
+            "circuit_breaker_rejects":     self.circuit_breaker_rejects.value,
+            "retry_attempts_total":        self.retry_attempts_total.value,
+            "retry_successes_total":       self.retry_successes_total.value,
+            "retry_exhausted_total":       self.retry_exhausted_total.value,
+            "health_probe_checks":         self.health_probe_checks.value,
+            "health_probe_failures":       self.health_probe_failures.value,
+            "graceful_shutdown_events":    self.graceful_shutdown_events.value,
+            "log_lines_total":             self.log_lines_total.value,
+            "health_probe_latency":        self.health_probe_latency.snapshot(),
+            "span_duration":               self.span_duration.snapshot(),
         }
