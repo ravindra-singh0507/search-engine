@@ -2154,4 +2154,129 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
             "status": "available",
         }
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PHASE 8 BATCH 4 — Security, Observability, Resilience, Cost
+    # ══════════════════════════════════════════════════════════════════════════
+
+    from app.security.jwt_auth import JWTAuth
+    from app.security.api_keys import APIKeyManager
+    from app.security.rbac import RBACEnforcer
+    from app.security.audit import AuditLogger, AuditEvent, AuditEventType
+    from app.resilience.circuit_breaker import CircuitBreakerRegistry
+    from app.resilience.health_probe import HealthProbe
+    from app.resilience.shutdown import GracefulShutdown
+    from app.cost.tracker import CostTracker
+    from app.cost.dashboard import CostDashboard
+    from app.observability.tracing import Tracer
+    from app.observability.structured_logging import StructuredLogger
+
+    jwt_auth      = JWTAuth(config.security)
+    api_key_mgr   = APIKeyManager(config.security, db=db)
+    rbac_enforcer = RBACEnforcer()
+    audit_logger  = AuditLogger(config.security, db=db)
+    cb_registry   = CircuitBreakerRegistry(config.resilience)
+    health_probe  = HealthProbe(config.resilience)
+    graceful_sd   = GracefulShutdown(config.resilience)
+    cost_tracker  = CostTracker(config.cost)
+    cost_dashboard = CostDashboard(cost_tracker, config.cost)
+    tracer        = Tracer(config.observability2)
+    struct_logger = StructuredLogger("search-engine", config.observability2)
+
+    # Register health probes
+    health_probe.add_probe("database", lambda: db.conn is not None or db.is_postgres)
+    health_probe.add_probe("events", lambda: config.events.enabled)
+
+    # Register graceful shutdown handlers
+    graceful_sd.register("database", db.close, timeout_sec=10.0)
+
+    # ── GET /security/health ─────────────────────────────────────────────────
+
+    @app.get("/security/health", summary="Security component status", tags=["Security"])
+    def security_health():
+        return {
+            "jwt_enabled":    config.security.enabled,
+            "audit_enabled":  config.security.audit_log_enabled,
+            "api_keys":       api_key_mgr.stats(),
+            "audit_stats":    audit_logger.stats(),
+        }
+
+    # ── POST /security/token ─────────────────────────────────────────────────
+
+    @app.post("/security/token", summary="Issue a JWT token", tags=["Security"])
+    def issue_token(
+        sub:       str = Query(..., description="Subject (user ID)"),
+        tenant_id: str = Query(default=""),
+        roles:     str = Query(default="reader", description="Comma-separated roles"),
+    ):
+        role_list = [r.strip() for r in roles.split(",") if r.strip()]
+        token = jwt_auth.create_token(sub, tenant_id, role_list)
+        audit_logger.log_auth(sub, success=True, tenant_id=tenant_id)
+        return {"token": token, "sub": sub, "roles": role_list}
+
+    # ── GET /security/rbac ───────────────────────────────────────────────────
+
+    @app.get("/security/rbac", summary="List RBAC roles and permissions", tags=["Security"])
+    def list_rbac():
+        from app.security.rbac import ROLE_PERMISSIONS
+        return {
+            "roles": {
+                role: [p.value for p in perms]
+                for role, perms in ROLE_PERMISSIONS.items()
+            }
+        }
+
+    # ── GET /resilience/circuit-breakers ─────────────────────────────────────
+
+    @app.get("/resilience/circuit-breakers",
+             summary="Circuit breaker states", tags=["Resilience"])
+    def circuit_breaker_stats():
+        return cb_registry.get_all_stats()
+
+    # ── GET /resilience/health-probes ────────────────────────────────────────
+
+    @app.get("/resilience/health-probes",
+             summary="Run all health probes", tags=["Resilience"])
+    def run_health_probes():
+        results = health_probe.probe_all()
+        overall = all(r.healthy for r in results)
+        return {
+            "overall_healthy": overall,
+            "probes": [r.to_dict() for r in results],
+        }
+
+    # ── GET /cost/summary ────────────────────────────────────────────────────
+
+    @app.get("/cost/summary", summary="Cost summary last 24h", tags=["Cost"])
+    def cost_summary():
+        return cost_dashboard.daily_report()
+
+    # ── GET /cost/budget ─────────────────────────────────────────────────────
+
+    @app.get("/cost/budget", summary="Budget status", tags=["Cost"])
+    def cost_budget():
+        return cost_dashboard.budget_status()
+
+    # ── GET /cost/stats ──────────────────────────────────────────────────────
+
+    @app.get("/cost/stats", summary="Cost tracker stats", tags=["Cost"])
+    def cost_stats():
+        return cost_tracker.stats()
+
+    # ── GET /observability/traces ────────────────────────────────────────────
+
+    @app.get("/observability/traces",
+             summary="Recent distributed traces", tags=["Observability"])
+    def recent_traces(limit: int = Query(default=20, ge=1, le=100)):
+        return {"traces": tracer.get_recent_traces(limit=limit)}
+
+    # ── GET /observability/logs ──────────────────────────────────────────────
+
+    @app.get("/observability/logs",
+             summary="Recent structured log entries", tags=["Observability"])
+    def recent_logs(
+        limit: int = Query(default=50, ge=1, le=500),
+        level: str = Query(default=None),
+    ):
+        return {"logs": struct_logger.get_recent(limit=limit, level=level)}
+
     return app
